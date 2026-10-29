@@ -17,6 +17,12 @@ pub struct AccountView {
     pub variant: String,
     pub domain: String,
     pub has_token: bool,
+    /// 主项目账号库里已被标记为「需重新登录」（refresh token 失效 / 缺少 refresh token）。
+    ///
+    /// 该标记由桌面端的 `refresh` 模块写进 `accounts.json`，是主项目对「这个账号还能不能
+    /// 用」的权威判断。反代必须跟着走：只看 `access_token` 非空就选号，会把桌面端已经判定
+    /// 失效的账号继续派活 —— 用户看到的就是「账户管理里写着需重新登录，反代页却一切正常」。
+    pub needs_relogin: bool,
 }
 
 pub fn list_at(path: &Path) -> Vec<AccountView> {
@@ -58,6 +64,7 @@ fn from_value(value: &Value) -> Option<AccountView> {
         variant,
         domain,
         has_token,
+        needs_relogin: value.get("needs_relogin").and_then(Value::as_bool) == Some(true),
     })
 }
 

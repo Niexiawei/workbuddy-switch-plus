@@ -28,6 +28,8 @@ struct RuntimeStatus {
     remaining: Option<f64>,
     credits_updated: u64,
     last_error: Option<String>,
+    /// 主项目（或上一轮进程）判定该账号凭据已失效：`account_status[auth_invalid]`。
+    auth_invalid: bool,
 }
 
 #[derive(Default)]
@@ -68,6 +70,7 @@ impl Pool {
                 runtime.remaining = entry.get("remaining").and_then(Value::as_f64);
                 runtime.credits_updated = entry.get("credits_updated").and_then(Value::as_f64).unwrap_or(0.0) as u64;
                 runtime.last_error = entry.get("last_error").and_then(Value::as_str).map(str::to_string);
+                runtime.auth_invalid = entry.get("auth_invalid").and_then(Value::as_bool).unwrap_or(false);
                 inner.status.insert(aid.clone(), runtime);
             }
         }
@@ -94,7 +97,7 @@ impl Pool {
         (self.clock)()
     }
 
-    /// 选一个可用账号。\`affinity\` 通常来自会话 id，缺省时不粘会话。
+    /// 选一个可用账号。`affinity` 通常来自会话 id，缺省时不粘会话。
     pub fn select(&self, model: &str, affinity: Option<&str>, realm: Option<&str>) -> Result<Selected, PoolError> {
         let now = self.now();
         let snapshot = self.store.snapshot();
@@ -120,6 +123,10 @@ impl Pool {
                     continue;
                 }
             }
+            // 主项目已判定「需重新登录」的账号不参与选号：与账户管理页保持同一判据。
+            if view.needs_relogin {
+                continue;
+            }
             let Some(record) = raw.iter().find(|row| {
                 row.get("uid").and_then(Value::as_str) == Some(view.uid.as_str())
                     || row.get("id").and_then(Value::as_str) == Some(view.id.as_str())
@@ -129,6 +136,9 @@ impl Pool {
                 continue;
             }
             let status = inner.status.get(&view.uid).cloned().unwrap_or_default();
+            if status.auth_invalid {
+                continue;
+            }
             if status.cooldown_until > now {
                 continue;
             }
@@ -255,8 +265,12 @@ impl Pool {
                     .and_then(|row| row.get("enabled"))
                     .and_then(Value::as_bool)
                     == Some(false);
+                // 与 Python `pool.state()` 同序：暂停 → 凭据失效 → 冷却 → 耗尽 → 可用。
+                let invalid = view.needs_relogin || status.auth_invalid;
                 let state = if paused {
                     "paused"
+                } else if invalid {
+                    "invalid"
                 } else if status.cooldown_until > now {
                     "cooling"
                 } else if status.remaining == Some(0.0) && status.credits_updated + 600 > now {
@@ -278,6 +292,11 @@ impl Pool {
                     "domain": view.domain,
                     "enabled": !paused,
                     "pool_state": state,
+                    // 凭据失效的两个来源分开给：前端要能说清「缺 refresh token，去重新登录」
+                    // 与「上游判定 invalid，先刷新 token」这两种处置方式不同的原因。
+                    "needs_relogin": view.needs_relogin,
+                    "auth_invalid": status.auth_invalid,
+                    "has_token": view.has_token,
                     "cooldown_until": status.cooldown_until,
                     "remaining": status.remaining,
                     "credits_updated": status.credits_updated,
@@ -434,6 +453,56 @@ mod tests {
         assert_eq!(state_of("u2"), json!("paused"));
         assert_eq!(state_of("u3"), json!("exhausted"));
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn needs_relogin_account_is_not_selected() {
+        // 账户管理页已判定「需重新登录」的账号（refresh token 失效）不能继续派活，
+        // 否则两边对同一个账号给出相反结论。
+        let accounts = r#"[
+            {"id":"a1","uid":"u1","variant":"cn","access_token":"t1","needs_relogin":true},
+            {"id":"a2","uid":"u2","variant":"cn","access_token":"t2"}
+        ]"#;
+        let (_dir, store, path) = fixture(accounts, json!({"pool": {"routing": "round_robin"}}));
+        let pool = Pool::new(store, path);
+        for _ in 0..4 {
+            assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
+        }
+    }
+
+    #[test]
+    fn only_relogin_account_reports_no_account() {
+        let accounts = r#"[{"id":"a1","uid":"u1","variant":"cn","access_token":"t1","needs_relogin":true}]"#;
+        let (_dir, store, path) = fixture(accounts, json!({"pool": {"routing": "round_robin"}}));
+        let pool = Pool::new(store, path);
+        assert!(pool.select("m", None, None).is_err());
+    }
+
+    #[test]
+    fn auth_invalid_status_is_not_selected() {
+        let (_dir, store, path) = fixture(TWO, json!({
+            "pool": {"routing": "round_robin"},
+            "account_status": {"u1": {"auth_invalid": true}}
+        }));
+        let pool = Pool::new(store, path);
+        for _ in 0..4 {
+            assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
+        }
+    }
+
+    #[test]
+    fn rows_flag_relogin_as_invalid() {
+        let accounts = r#"[
+            {"id":"a1","uid":"u1","variant":"cn","access_token":"t1","needs_relogin":true,"needs_relogin_reason":"缺少 refresh token"},
+            {"id":"a2","uid":"u2","variant":"cn","access_token":"t2"}
+        ]"#;
+        let (dir, store, path) = fixture(accounts, json!({"pool": {"routing": "round_robin"}}));
+        let pool = Pool::new(store, path);
+        let rows = pool.rows(&accounts::list_at(&dir.path().join("accounts.json")));
+        let row = rows.iter().find(|row| row["uid"] == json!("u1")).unwrap();
+        assert_eq!(row["pool_state"], json!("invalid"));
+        assert_eq!(row["needs_relogin"], json!(true));
+        assert_eq!(row["has_token"], json!(true));
     }
 
     #[test]

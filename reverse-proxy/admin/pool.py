@@ -516,7 +516,9 @@ class AccountPool:
         status = self.store.data["account_status"].get(row["id"], {})
         if not row["enabled"]:
             return "paused"
-        if row["status"] == "invalid" or status.get("auth_invalid"):
+        # needs_relogin 是桌面端写进账号库的权威判定；与「凭据文件读不出来」（status=invalid）
+        # 和「刷新后确认失效」（auth_invalid）同属「这个号现在不能用」。
+        if row.get("needs_relogin") or row["status"] == "invalid" or status.get("auth_invalid"):
             return "invalid"
         if status.get("cooldown_until", 0) > self.clock():
             return "cooling"

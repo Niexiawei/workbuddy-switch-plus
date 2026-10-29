@@ -816,6 +816,11 @@ class SwitchStore:
                     "expired": bool(expiry) and expiry < time.time() * 1000,
                     "refresh_available": bool(rec.get("refresh_token")),
                     "status": "ready",
+                    # 桌面端 refresh 模块的权威判定：refresh token 失效后会把账号标成
+                    # needs_relogin。反代必须认这一位，否则「账户管理说需重新登录、
+                    # 反代页说可用」两边各说一套。
+                    "needs_relogin": bool(rec.get("needs_relogin")),
+                    "needs_relogin_reason": str(rec.get("needs_relogin_reason") or ""),
                 })
             result.append(row)
         return result

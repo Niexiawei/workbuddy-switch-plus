@@ -15,7 +15,10 @@ from pathlib import Path
 
 import httpx
 
+from fastapi import HTTPException
+
 import admin.server as admin_server
+from admin.pool import AccountPool
 from admin.switch_store import SwitchStore, variant_of
 
 ADMIN_KEY = "admin-test-credential-long-enough"
@@ -177,6 +180,28 @@ class HotReloadSuite(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["stale"])
         self.assertEqual(result["total"], 2)
 
+
+    # ── 需重新登录 ──────────────────────────────────────────────
+    async def test_needs_relogin_account_is_invalid(self):
+        """桌面端 refresh 失败后写的 needs_relogin 必须被反代认成「不可用」。
+
+        否则同一个账号在账户管理页显示「需重新登录」、在反代页显示「可用」，
+        请求继续打到已经失效的凭据上。
+        """
+        self.write_accounts([
+            record("u1", "一号"),
+            dict(record("u2", "二号"), needs_relogin=True, needs_relogin_reason="缺少 refresh token"),
+        ])
+        rows = await self.rows()
+        self.assertEqual(rows["u2"]["pool_state"], "invalid")
+        self.assertTrue(rows["u2"]["needs_relogin"])
+        self.assertEqual(rows["u1"]["pool_state"], "available")
+
+        # 选号同样跳过它：把 u1 暂停后池里就没有可用账号了。
+        self.store.data["accounts"]["u1"]["enabled"] = False
+        pool = AccountPool(self.store, clock=lambda: time.time())
+        with self.assertRaises(HTTPException):
+            pool.select()
 
 class VariantSuite(unittest.TestCase):
     def test_variant_to_realm(self):

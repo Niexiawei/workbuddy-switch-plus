@@ -87,6 +87,11 @@ impl StateStore {
             ));
         }
         let mut guard = self.data.write().unwrap();
+        // 写前先与磁盘对齐：灰度期 Python 服务可能还在写同一份 state.json，
+        // 而这里是「整份内存 → 整份落盘」。不重读就会把对方刚写进去的
+        // account_status / 密钥一次性覆盖掉（经典丢数据）。
+        // 每次写都重读的代价可以接受：写操作只有密钥 CRUD、池设置、账号动作这些低频路径。
+        self.reload_from_disk(&mut guard);
         apply(&mut guard);
         let content = serde_json::to_string_pretty(&*guard)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -96,5 +101,19 @@ impl StateStore {
     /// 写回磁盘。只读实例会拒绝——这是有意的：灰度期 Python 是唯一写者。
     pub fn save(&self) -> io::Result<()> {
         self.update(|_| {})
+    }
+
+    /// 把磁盘上的最新内容读进内存；文件不存在或损坏时保持当前内存值。
+    ///
+    /// 只补齐缺失键、不丢已有键：磁盘上被别的进程删掉的键会跟着消失，这是本意——
+    /// 删除也是对方的写入意图。
+    fn reload_from_disk(&self, guard: &mut Value) {
+        let Ok(text) = std::fs::read_to_string(&self.path) else { return };
+        let Ok(mut disk) = serde_json::from_str::<Value>(&text) else { return };
+        let Some(object) = disk.as_object_mut() else { return };
+        for key in STATE_KEYS {
+            object.entry((*key).to_string()).or_insert_with(|| default_for(key));
+        }
+        *guard = disk;
     }
 }
