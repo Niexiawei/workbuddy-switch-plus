@@ -69,6 +69,13 @@ pip install -r requirements.txt pyinstaller && python build-exe.py   # → dist/
 
 `reverse-proxy/` 是独立 Python 进程（FastAPI + uvicorn），把本机账号库转成 OpenAI / Anthropic 兼容接口，含账号池轮换与多密钥分发。桌面端只做「启动器」：`src-tauri/src/reverse_proxy.rs` 按「用户指定 → 资源目录 → exe 同级 → 源码树（仅 debug）」顺序找可执行文件，进程句柄不落盘，重启后靠端口探测重新识别。协议转换在 `reverse-proxy/core/`，管理面在 `reverse-proxy/admin/`。
 
+同一套能力已内迁到 `crates/wb-switch-proxy`（进程内 axum），由 `src-tauri/src/proxy_engine.rs` 托管，灰度期用前端「引擎」切换器二选一。
+
+**账号只有一份**：两个引擎都读 `~/.wb-switch-plus/accounts.json`，池只是它的一层属性。可用性判据固定为
+`paused → invalid → cooling → exhausted → available`，其中 `invalid` = `needs_relogin`（桌面端刷新失败写入）| `auth_invalid` | 无 token。
+Rust `pool.rs` 与 Python `pool.state()` 必须逐项一致——历史上只看 `access_token` 非空，导致「账户管理说需重新登录、反代页说可用」。
+账号的增删与登录只在账户管理做；反代页的「扫码登录」在桌面端直接复用主项目 OAuth（写同一份库），不要另实现一套。
+
 ### Agent Companion 悬浮窗
 
 `vendor/agent-companion/` 是 vendored 的 `tauri-plugin-agent-studio`，由 `scripts/prepare-agent-companion.mjs` 准备 `dist-embed` 产物后再编译进桌面端。这些 embed 产物是生成物，不进仓库。
@@ -80,6 +87,8 @@ pip install -r requirements.txt pyinstaller && python build-exe.py   # → dist/
 - 反代 exe 是 `tauri.windows.conf.json` 里声明的 bundle resource，文件不存在会让 Tauri 构建直接硬报错；因此该声明**只能**在 Windows 配置里，基线 `tauri.conf.json` 不能有。
 - `productName`（`WB-Switch-Plus`）改名会连带影响进程映像名。`crates/wb-switch-core/src/modules/process.rs` 的 `SELF_IMAGE_STEMS` 是精确（忽略大小写、非子串）匹配清单，目前含 `wb-switch-plus` / `wb-switch-rust` / `workbuddy-switch` / `wb-switch` 四项，漏改会导致「关闭客户端」时把自己的进程也算进去。
 - 不要用 `env!("CARGO_MANIFEST_DIR")` 做运行时路径兜底（会泄漏构建机绝对路径），只能用 `include_bytes!` 或 `#[cfg(debug_assertions)]` 包住。`npm run verify:release` 就是查这个。
+- 两个反代引擎共用同一份 `state.json`。桌面端 Rust 引擎用 `StateStore::open_writable`（只读会让池设置/密钥保存直接 403），
+  `update()` 落盘前会先重读磁盘避免整份覆盖，但**同秒写仍是后写者胜**——灰度期只能启用一个引擎。
 - 演示/截图模式（前端 `VITE_DEMO_MODE` / `VITE_SCREENSHOT_DEMO`，桌面端 `WB_SWITCH_SCREENSHOT_DEMO`）必须完全不读真实账号、不触发签到/轮换/保活；新增读取接口时要同时补 `api.ts` 的 `DEMO_READ_COMMANDS` 与 fixture。
 - 仓库不提交本地数据与凭据（账号库、认证文件、密钥、token 均在 `.gitignore` 中）；发版前用 `git grep` 扫 `ghp_` / `npm_` / `gho_` 等模式。
 

@@ -150,11 +150,24 @@ Router 只由 Tauri 宿主启动。`wb-switch-server` **不挂载**它——webu
 **D4：协议层 1:1 移植，先录制后重写。**
 理由：`converter` / `responses_projection` / `anthropic_adapter` 是长期踩坑的产物（desensitize、identity filter、SSE 边界）。迁移期间用「同一请求 → 同一上游体 / 同一 SSE 帧序列」的 golden 测试锁住，禁止顺手优化。
 
-**D5：池与任务先读后写。**
-第一阶段 Rust 只做选号与冷却读；签到/旅行/保活仍由 Python 跑（或全部停用），确认选号一致后再接管写操作。写操作必须单点在 Rust，避免两套同时改 `state.json`。
+**D5：池与任务先读后写。**（2026-10-29 已收尾：桌面端引擎改为可写）
+第一阶段 Rust 只做选号与冷却读；签到/旅行/保活仍由 Python 跑，确认选号一致后再接管写操作。
+现在 `proxy_engine` 用 `StateStore::open_writable`——池设置、密钥、账号动作都必须真正落盘，只读实例会直接 403。
+为降低双写风险，`StateStore::update()` 落盘前先重读磁盘（对方刚写进去的 `account_status` / 密钥不会被整份覆盖），
+但**同秒写同一处仍是后写者胜**，所以灰度期仍要求只启用一个引擎。
 
 **D6：灰度双跑 = 双端口 + SPA 切换。**
-Python 留 8787，Rust 起 8788；SPA 顶部多一个「引擎」选择器，选中哪个就把 base URL 指向哪个端口，状态存在本地。两套各有自己的数据目录，避免两个进程同时写 `state.json`；**任一时刻只有被选中的引擎写状态**，另一个只读（或只跑数据面）。
+Python 留 8787，Rust 起 8788；SPA 顶部多一个「引擎」选择器，选中哪个就把 base URL 指向哪个端口，状态存在本地。
+两个引擎**共用同一份** `~/.wb-switch-plus/reverse-proxy/state.json` 与同一份 `accounts.json`（这是「一套数据、两套实现」对比的前提），
+因此任一时刻只应启用一个引擎；切换器只负责改地址，不会去停另一个进程。
+
+**D8：账号只有一份，判据只有一套（2026-10-29）。**
+反代不再维护「第二份账号表」：账号、凭据、登录态、`needs_relogin` 全部以 `~/.wb-switch-plus/accounts.json` 为准，
+池只在其上加一层「是否参与调度」。选号判据固定为
+`paused → invalid(needs_relogin | auth_invalid | 无 token) → cooling → exhausted → available`，
+Rust 与 Python 必须逐项一致；Python 的 `switch_store` 仍维护 `data["accounts"]` 视图（热加载 + 覆盖层），
+但它只承载「池内改名 / 启停 / 移除」，不再是账号事实来源。
+理由：出现过「账户管理显示需重新登录、反代页显示可用」——同一账号两套判据，用户无从判断该信哪个。
 
 **D7：下掉 Python 的退出标准（不是「写完就删」）。**
 契约测试全绿 + 灰度双跑 7 天无差异 + 回滚开关验证过一次，才删除 `reverse-proxy/` 与打包脚本。
@@ -275,6 +288,22 @@ P2 完成。
 - `ServiceControl` 改为引擎感知：启动/停止/轮询按当前引擎走；Rust 下禁用「改监听地址 / 改端口 / 提权停止」，并给出原因。
 - `npx tsc --noEmit` 通过；`npm test` 175 passed。
 
+账号来源合并（2026-10-29，P6 追加）：反代不再维护「第二份账号表」，与账户管理共用同一份判据。
+- **判据统一**：池选号新增两条硬过滤 —— 账号库里的 `needs_relogin`（桌面端 refresh 失败后写入）与
+  `account_status[auth_invalid]`。此前只看 `access_token` 非空，桌面端已判定失效的账号仍会被派活，
+  用户看到的就是「账户管理说需重新登录、反代页说可用」。池状态随之新增 `invalid`，并回报
+  `needs_relogin` / `auth_invalid` / `has_token` 三个字段说明**为什么**不可用。Python 侧
+  （`switch_store.account_rows` + `pool.state`）同步做了一样的事，两个引擎结论一致。
+- **添加入口合并**：桌面端反代页的「扫码登录」不再走 `/admin/api/oauth/*`（Rust 仍 501），
+  而是直接打开主项目的 `OAuthLoginDialog` —— 和账户管理页同一个流程，采集结果写进同一份
+  `accounts.json`，两个页面立刻都看得到。webui 没有 Tauri 命令，继续用反代自己的 OAuth 链路。
+  批量扫码（反代独有的服务端 slot 流程）在桌面端隐藏，避免摆一个必然失败的按钮。
+- **UI 合并**：账户管理页的账号卡片直接显示反代池异常状态（冷却 / 积分耗尽 / 凭据失效；池正常时不挂徽标），
+  右上角菜单新增「加入 / 移出反代池」——与反代页的暂停/恢复是同一个开关（`PATCH /admin/api/accounts/:id`）。
+  反代页「账号池」降级为池运维面板：顶部加「账户管理」入口，并明确账号的增删与登录不在这里做。
+- **桌面端引擎改为可写**：`proxy_engine` 用 `StateStore::open_writable`，池设置与密钥才能真正落盘；
+  `StateStore::update` 写前先重读磁盘，避免与仍在运行的 Python 服务互相覆盖。灰度期仍要求只启用一个引擎。
+
 未完成：
 - **webui BFF**：`wb-switch-server` 还没有把 `/admin/api/*` 转发到本机桌面端的实现（当前 webui 仍是浏览器直连 8787 + 手动填地址/令牌）。按 D2 的计划，应加 BFF + `webui-token` 握手。
 - 桌面端「应用启动即拉起 Rust 引擎」尚未默认开启（仍由用户点启动）。
@@ -337,17 +366,19 @@ P2 完成。
 1. ~~管理面是否长期保留 HTTP~~ → 已定：桌面端托管 HTTP，webui 走 BFF 连本机桌面端。
 2. ~~灰度双跑形式~~ → 已定：双端口（8787 / 8788）+ SPA 切换。
 3. `webui-token` 的交换细节：固定路径文件 vs 桌面端写入环境变量；webui 重启后是否自动重读。
-4. 灰度期 Rust 引擎是否允许写状态：建议**只读**（密钥/账号状态以 Python 为准），只有切到 Rust 才写。
-3. 扫码登录的浏览器打开方式是否沿用 `webbrowser.open`（Rust 用 `open` crate）。
-4. 是否借迁移顺手把 `rb` 侧 `wb-switch-server` 的 `/api/*`（账号切换等）也并进同一个 Router，彻底一套 HTTP 面。
-5. 迁移期间新功能（例如 CLI 接入卡片）只进 Rust，还是两边都改？建议只进 Rust。
+4. ~~灰度期 Rust 引擎是否允许写状态~~ → 已定：**可写**（D5 修订）。只读会让池设置/密钥的保存静默失败，比双写更难排查；
+   双写风险用「写前重读磁盘 + 灰度期只启用一个引擎」兜。
+5. ~~账号来源~~ → 已定：只有 `accounts.json` 一份，池是它的一层属性（D8）。
+6. 是否借迁移顺手把 `wb-switch-server` 的 `/api/*`（账号切换等）也并进同一个 Router，彻底一套 HTTP 面。
+7. 迁移期间新功能（例如 CLI 接入卡片）只进 Rust，还是两边都改？建议只进 Rust。
+8. 扫码登录的浏览器打开方式是否沿用 `webbrowser.open`（Rust 用 `open` crate）。桌面端已改为复用主项目 OAuth，此项只剩 webui 需要。
 ---
 
 ## 11. 附：P5 剩余 501 的可行性
 
 | 项 | 能否用 Rust 实现 | 关键依赖 | 风险 |
 | --- | --- | --- | --- |
-| OAuth 扫码（start / poll / delete / batch） | 能（M） | 两个上游端点 + 轮询状态机；打开浏览器用 `open` crate | 低；与现有 Python 行为可直接对照 |
+| OAuth 扫码（start / poll / delete / batch） | 桌面端已不需要（复用主项目 OAuth）；webui 仍需（M） | 两个上游端点 + 轮询状态机；打开浏览器用 `open` crate | 低；桌面端直接走 `wb-switch-core::oauth` 更省事 |
 | `/admin/api/test` 连接测试 | 能（S） | 复用 chat 链路发一条极短请求 | 会真实消耗额度，需显式确认 |
 | 密钥导出 `keys/:id/export` | 能（M） | 复刻 Python 的导出加密格式（含 settings.key） | **中高**：格式不一致会导致导入失败，必须用现有测试向量逐字节比对 |
 | 新增账号 `POST /accounts` | 能（M） | 需要账号库写权限（当前 Rust 只读） | 中：会打破「账号库由桌面端/Python 单写」的约定，必须与 cutover 一起做 |
@@ -358,3 +389,45 @@ P2 完成。
 
 结论：**都能迁**，没有必须依赖 Python 的项。建议顺序：
 `/test` → 口令登录 + IP 白名单 → 告警测试 → OAuth 扫码 → travel/active → 密钥导出 → 新增账号（与 cutover 绑定）。
+
+---
+
+## 12. 结论：账号体系合并（2026-10-29）
+
+这一节记录一次具体故障的结论，用来防止同样的分裂再长出来。
+
+### 12.1 现象与根因
+
+- 现象：同一个账号在**账户管理**显示「需重新登录」，在**反代页**显示「可用」，请求继续打到失效凭据上。
+- 根因不是两套账号库（两个引擎读的都是 `~/.wb-switch-plus/accounts.json`），而是**两套可用性判据**：
+  - 账户管理看 `accounts.json` 的 `needs_relogin`，它由 `wb-switch-core::modules::refresh` 在刷新失败时写入；
+  - 反代池只看 `access_token` 非空，压根没读这一位。
+- 触发源：桌面端进程继承了终端的 `HTTP(S)_PROXY`，出站被沙箱拦截（billing 域 `000`），刷新失败 → 写入 `needs_relogin`。
+  去掉代理变量后同一请求返回 `401`（链路可达），刷新成功、标记被自动清除。
+  **排查任何「莫名其妙要求重新登录 / 授权服务连接失败」，先确认进程环境里没有代理变量。**
+
+### 12.2 合并后的口径
+
+| 层 | 唯一来源 | 说明 |
+| --- | --- | --- |
+| 账号、凭据、登录态 | `~/.wb-switch-plus/accounts.json` | 增删改登录一律在账户管理；反代只读（Python 侧额外维护覆盖层，仅用于池内改名/启停/移除） |
+| 可用性判据 | `paused → invalid → cooling → exhausted → available` | `invalid` = `needs_relogin` \| `auth_invalid` \| 无 token；Rust `pool.rs` 与 Python `pool.state()` 必须逐项一致 |
+| 池运行态 | `state.json` 的 `account_status` | 冷却、积分快照、请求计数；两个引擎共用同一份 |
+| 池成员与调度 | `state.json` 的 `account_overrides` + `pool` | 改名、启停、移除、路由策略、限速 |
+| 池状态出口 | `GET /admin/api/pool/summary` | 每行额外给 `needs_relogin` / `needs_relogin_reason` / `auth_invalid` / `has_token`，界面据此说清「为什么不可用」 |
+
+### 12.3 入口合并
+
+- **账户管理页**是唯一账号入口：卡片上直接显示反代池异常状态（冷却 / 积分耗尽 / 凭据失效；正常时不挂徽标），
+  菜单里「加入 / 移出反代池」与反代页的暂停/恢复是同一个开关。
+- **反代页「账号池」**只剩池运维：调度策略、冷却、积分、限速、批量任务；顶部给「账户管理」入口，
+  「删除」改称「移出池」（它只影响反代，不动账号库）。
+- **扫码登录不实现第二套**：桌面端直接打开主项目的 `OAuthLoginDialog`，采集结果写同一份账号库；
+  webui 无 Tauri 命令，继续用 `/admin/api/oauth/*`（Rust 仍 501，webui 配 Python 引擎）。批量扫码是反代独有的
+  服务端 slot 流程，桌面端隐藏而不是留一个必然失败的按钮。
+
+### 12.4 验收
+
+- 构造 `needs_relogin: true` 的账号：账户管理与反代页都显示不可用，池选号跳过它（两侧各有单测）。
+- 反代页添加账号后，账户管理列表在刷新间隔内出现同一条记录（同一份库，无同步逻辑）。
+- 池设置、密钥、账号动作在 Rust 引擎下能落盘（只读实例会 403，属预期）。
