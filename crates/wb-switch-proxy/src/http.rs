@@ -1,13 +1,14 @@
-//! HTTP 路由（P1 骨架）。
+//! HTTP 路由。
 //!
-//! 已实现：`/health`、`/v1/models`（种子清单）。
-//! 未实现：数据面 4 条、管理面 76 条、鉴权——统一返回 501，避免「看起来能用」。
+//! 数据面：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`。
+//! 管理面：`/admin/api/*`，鉴权见 `crate::hostauth`（宿主令牌）与 `crate::admin`。
+//! 未实现的端点返回 501，避免「看起来能用」。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -18,29 +19,41 @@ use crate::accounts;
 use crate::anthropic;
 use crate::catalog;
 use crate::chat;
-use crate::prompt;
 use crate::config::ProxyConfig;
+use crate::hostauth::HostAuth;
 use crate::profile;
 use crate::projection;
+use crate::prompt;
 use crate::responses;
 use crate::state::StateStore;
+use crate::usage;
 
 pub struct AppState {
     pub cfg: ProxyConfig,
     pub store: Arc<StateStore>,
     pub pool: Arc<crate::pool::Pool>,
     pub admin: Arc<crate::admin::AdminState>,
+    /// 宿主令牌（桌面端注入）。见 `crate::hostauth`。
+    pub host_auth: HostAuth,
     pub started_at: Instant,
     /// 模型目录缓存（60s）。放这里而不是模块级静态：测试之间不会串。
     pub catalog: std::sync::Mutex<Option<(Instant, Vec<Value>)>>,
 }
 
 impl AppState {
-    pub fn new(cfg: ProxyConfig, store: StateStore) -> Self {
+    pub fn new(cfg: ProxyConfig, store: StateStore, host_auth: HostAuth) -> Self {
         let store = Arc::new(store);
         let pool = Arc::new(crate::pool::Pool::new(store.clone(), cfg.accounts_path.clone()));
         let admin = Arc::new(crate::admin::AdminState::from_env());
-        Self { cfg, store, pool, admin, started_at: Instant::now(), catalog: std::sync::Mutex::new(None) }
+        Self {
+            cfg,
+            store,
+            pool,
+            admin,
+            host_auth,
+            started_at: Instant::now(),
+            catalog: std::sync::Mutex::new(None),
+        }
     }
 }
 
@@ -49,6 +62,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/admin/api", crate::admin::router())
         .route("/health", get(health))
         .route("/v1/models", get(models))
+        .route("/v1/usage", get(gateway_usage))
         .route("/v1/chat/completions", post(chat_handler))
         .route("/v1/responses", post(responses_handler))
         .route("/v1/messages", post(messages_handler))
@@ -64,7 +78,14 @@ impl AppState {
     }
 }
 
-async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
+/// 健康检查。刻意不要求鉴权：外部客户端与宿主都靠它判断「服务起来没有」。
+///
+/// `desiredPort` / `portShifted` 让排障一眼看出端口是否发生过偏移
+/// （自动 +1，见 `crate::ports`）；`hostAuth` 表示宿主令牌是否启用。
+async fn health(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+) -> Json<Value> {
     let accounts = accounts::list_at(&state.cfg.accounts_path);
     Json(json!({
         "status": "ok",
@@ -76,14 +97,23 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "dataDir": state.cfg.data_dir.to_string_lossy(),
         "accountsPath": state.cfg.accounts_path.to_string_lossy(),
         "stateWritable": state.store.writable(),
-        // 骨架阶段明确标注能力边界，客户端不应把 501 当成临时故障重试。
+        "hostAuth": state.host_auth.enabled(),
+        "peerIsLoopback": peer.ip().is_loopback(),
+        // 能力边界：客户端不应把 501 当成临时故障重试。
         "capabilities": {
             "models": true,
             "chat": true,
             "admin": true,
             "auth": true,
+            "usage": true,
+            "ipAllowlist": false,
         },
     }))
+}
+
+/// `GET /v1/usage`：网关密钥自查（对照 Python 的 `gateway_key_usage`）。
+async fn gateway_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    usage::handle(&state.store, &headers)
 }
 
 async fn chat_handler(

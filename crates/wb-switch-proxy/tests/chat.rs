@@ -66,7 +66,7 @@ fn app(fixture: &Fixture) -> Router {
         billing_base: "http://127.0.0.1:1".to_string(),
     };
     let store = StateStore::open(fixture.root.join("state.json")).unwrap();
-    router(Arc::new(AppState::new(cfg, store)))
+    router(Arc::new(AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled())))
 }
 
 async fn post_json(app: Router, uri: &str, body: serde_json::Value) -> (StatusCode, String) {

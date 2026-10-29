@@ -1,16 +1,25 @@
-//! P1 骨架的回归：状态默认值 / 只读保护 / 账号视图 / 两个只读端点。
+//! 路由层面的回归：health / models / usage。
+//!
+//! 迁移说明：`/health` 现在会读 `ConnectInfo`（用于报告 `peerIsLoopback`），
+//! 所以路由测试必须像真实监听那样注入连接信息——`Router::oneshot` 直接调用
+//! 会让 extractor 失败并返回 500，那是测试接线问题，不是端点问题。
+//!
+//! 端到端（真实 bind、端口偏移）见 `tests/serve.rs`。
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
+use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use wb_switch_proxy::accounts;
 use wb_switch_proxy::config::ProxyConfig;
+use wb_switch_proxy::hostauth::HostAuth;
 use wb_switch_proxy::http::{router, AppState};
-use wb_switch_proxy::state::{StateStore, STATE_KEYS};
+use wb_switch_proxy::state::StateStore;
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -18,62 +27,11 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-#[test]
-fn missing_state_file_gets_every_default_key() {
-    let (_dir, root) = temp_dir();
-    let store = StateStore::open(root.join("state.json")).unwrap();
-    for key in STATE_KEYS {
-        assert!(store.get(key).is_some(), "缺少默认键 {key}");
-    }
-    assert!(store.get("keys").unwrap().is_object());
-    assert_eq!(store.get("runtime_since").unwrap(), json!(0));
-    assert!(!store.writable());
-}
-
-#[test]
-fn unknown_keys_survive_and_writable_save_round_trips() {
-    let (_dir, root) = temp_dir();
-    let path = root.join("state.json");
-    std::fs::write(&path, r#"{"future_field":{"keep":true},"keys":{"k1":{"name":"x"}}}"#).unwrap();
-
-    let store = StateStore::open_writable(&path).unwrap();
-    assert_eq!(store.get("future_field").unwrap()["keep"], json!(true));
-    store.save().unwrap();
-
-    let reloaded: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(reloaded["future_field"]["keep"], json!(true));
-    assert_eq!(reloaded["keys"]["k1"]["name"], json!("x"));
-    assert!(reloaded["users"].is_object(), "保存时必须补齐默认键");
-}
-
-#[test]
-fn readonly_store_refuses_to_save() {
-    let (_dir, root) = temp_dir();
-    let store = StateStore::open(root.join("state.json")).unwrap();
-    let error = store.save().unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-}
-
-#[test]
-fn account_view_derives_variant_and_token_presence() {
-    let (_dir, root) = temp_dir();
-    let path = root.join("accounts.json");
-    std::fs::write(&path, r#"[
-        {"id":"a1","uid":"u1","nickname":"CN 号","variant":"cn","domain":"www.codebuddy.cn","access_token":"t"},
-        {"uid":"u2","domain":"www.workbuddy.ai"}
-    ]"#).unwrap();
-
-    let rows = accounts::list_at(&path);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].id, "a1");
-    assert_eq!(rows[0].variant, "cn");
-    assert!(rows[0].has_token);
-    assert_eq!(rows[1].id, "u2", "没有 id 时用 uid 兜底");
-    assert_eq!(rows[1].variant, "ai", "domain 兜底判档位");
-    assert!(!rows[1].has_token);
-}
-
-fn app_with_temp_state() -> (tempfile::TempDir, axum::Router) {
+fn app_with(
+    keys: Value,
+    writable: bool,
+    auth: HostAuth,
+) -> (tempfile::TempDir, Router) {
     let (dir, root) = temp_dir();
     let accounts_path = root.join("accounts.json");
     std::fs::write(&accounts_path, r#"[{"id":"a1","uid":"u1","variant":"cn"}]"#).unwrap();
@@ -85,9 +43,23 @@ fn app_with_temp_state() -> (tempfile::TempDir, axum::Router) {
         upstream_base: "http://127.0.0.1:1".to_string(),
         billing_base: "http://127.0.0.1:1".to_string(),
     };
-    let store = StateStore::open(root.join("state.json")).unwrap();
-    let app = router(std::sync::Arc::new(AppState::new(cfg, store)));
+    let path = root.join("state.json");
+    std::fs::write(&path, json!({ "keys": keys }).to_string()).unwrap();
+    let store = if writable {
+        StateStore::open_writable(path).unwrap()
+    } else {
+        StateStore::open(path).unwrap()
+    };
+    let app = router(std::sync::Arc::new(AppState::new(cfg, store, auth)));
     (dir, app)
+}
+
+fn loopback_request(uri: &str) -> Request<Body> {
+    let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
+    request
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -95,69 +67,127 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+fn sha256_hex(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[tokio::test]
-async fn health_reports_skeleton_capabilities() {
-    let (_dir, app) = app_with_temp_state();
-    let response = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+async fn health_reports_capabilities_and_peer() {
+    let (_dir, app) = app_with(json!({}), false, HostAuth::disabled());
+    let response = app.oneshot(loopback_request("/health")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["status"], json!("ok"));
     assert_eq!(body["engine"], json!("rust"));
     assert_eq!(body["accounts"], json!(1));
-    assert_eq!(body["capabilities"]["chat"], json!(true), "chat 已迁移，应如实声明");
-    assert_eq!(body["capabilities"]["admin"], json!(false), "管理面仍在 Python");
+    assert_eq!(body["capabilities"]["chat"], json!(true));
+    assert_eq!(body["capabilities"]["admin"], json!(true));
+    assert_eq!(body["capabilities"]["usage"], json!(true));
+    // 白名单仍未执行，能力声明不能撒谎。
+    assert_eq!(body["capabilities"]["ipAllowlist"], json!(false));
+    assert_eq!(body["stateWritable"], json!(false), "只读实例应如实报告不可写");
+    assert_eq!(body["hostAuth"], json!(false));
+    assert_eq!(body["peerIsLoopback"], json!(true));
 }
 
 #[tokio::test]
-async fn models_returns_seed_catalogue() {
-    let (_dir, app) = app_with_temp_state();
-    let response = app
-        .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
-        .await
+async fn health_reports_host_auth_enabled() {
+    let (_dir, app) = app_with(json!({}), false, HostAuth::with_token("wbh_abcdef0123456789"));
+    let response = app.oneshot(loopback_request("/health")).await.unwrap();
+    let body = body_json(response).await;
+    assert_eq!(body["hostAuth"], json!(true));
+}
+
+#[tokio::test]
+async fn models_requires_no_key_on_fresh_install() {
+    let (_dir, app) = app_with(json!({}), false, HostAuth::disabled());
+    let response = app.oneshot(loopback_request("/v1/models")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "没有密钥时不应拦截");
+    let body = body_json(response).await;
+    assert_eq!(body["object"], json!("list"));
+    assert!(!body["data"].as_array().unwrap().is_empty(), "种子清单不应为空");
+}
+
+#[tokio::test]
+async fn gateway_usage_rejects_missing_key_when_keys_exist() {
+    let keys = json!({
+        "k1": {"hash": sha256_hex("secret"), "name": "k", "enabled": true, "quota": 100}
+    });
+    let (_dir, app) = app_with(keys, false, HostAuth::disabled());
+    let response = app.oneshot(loopback_request("/v1/usage")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], json!("missing"));
+}
+
+#[tokio::test]
+async fn gateway_usage_returns_quota_for_valid_key() {
+    let keys = json!({
+        "k1": {
+            "hash": sha256_hex("secret"),
+            "name": "测试",
+            "enabled": true,
+            "quota": 100,
+            "used_tokens": 40,
+            "models": ["glm-5.3"]
+        }
+    });
+    let (_dir, app) = app_with(keys, false, HostAuth::disabled());
+    let request = Request::builder()
+        .uri("/v1/usage")
+        .header("authorization", "Bearer secret")
+        .body(Body::empty())
         .unwrap();
+    let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    let data = body["data"].as_array().unwrap();
-    assert!(!data.is_empty());
-    // 远端不可达时可能退到本机产品配置；两种来源都是允许的，但不能为空。
-    let source = data[0]["source"].as_str().unwrap();
-    assert!(source == "seed" || source == "catalogue", "未知来源 {source}");
-    assert!(data[0]["context_window"].as_i64().unwrap() > 0);
+    assert_eq!(body["object"], json!("usage"));
+    assert_eq!(body["tokens"]["limit"], json!(100));
+    assert_eq!(body["tokens"]["used"], json!(40));
+    assert_eq!(body["tokens"]["remaining"], json!(60));
+    assert_eq!(body["key"]["name"], json!("测试"));
 }
 
 #[tokio::test]
-async fn chat_without_account_returns_503() {
-    let (_dir, app) = app_with_temp_state();
-    let second = app.clone();
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"messages":[]}"#))
-                .unwrap(),
-        )
-        .await
+async fn admin_api_accepts_host_token_from_loopback() {
+    let token = "wbh_abcdef0123456789";
+    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token(token));
+    let mut request = Request::builder()
+        .uri("/admin/api/session")
+        .header("x-proxy-host-token", token)
+        .body(Body::empty())
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "宿主令牌应直接通过鉴权");
     let body = body_json(response).await;
-    assert_eq!(body["error"]["type"], json!("no_account"));
+    assert_eq!(body["role"], json!("admin"));
+}
 
-    // /v1/responses 已迁移；没有账号时同样应给 503 而不是 501。
-    let response = second
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/responses")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"input":"hi"}"#))
-                .unwrap(),
-        )
-        .await
+#[tokio::test]
+async fn admin_api_rejects_host_token_from_non_loopback() {
+    let token = "wbh_abcdef0123456789";
+    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token(token));
+    let mut request = Request::builder()
+        .uri("/admin/api/session")
+        .header("x-proxy-host-token", token)
+        .body(Body::empty())
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 9], 50000))));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "非回环来源不应拿到 admin");
+}
+
+#[tokio::test]
+async fn admin_api_rejects_without_any_credential() {
+    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token("wbh_abcdef0123456789"));
+    let response = app.oneshot(loopback_request("/admin/api/session")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

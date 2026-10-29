@@ -1,17 +1,18 @@
-//! 管理面（P5 第一阶段）：登录会话 + 只读概览 + 密钥列表。
+//! 管理面：与 Python 的 `/admin/api/*` 同契约。
 //!
-//! 目标是与 Python 的 \`/admin/api/*\` 同契约，但分阶段落地：本阶段只做
-//! 「打开桌面端就能看到账号/密钥/模型/设置」所需的最小集合，写操作与
-//! 76 条里的其余端点仍由 Python 服务提供（灰度期两个引擎并存）。
+//! 鉴权有两条路，共用同一套 admin 角色：
+//! 1. **宿主令牌**（桌面端）：`invoke("proxy_admin_token")` 拿到短期令牌，
+//!    放在 `X-Proxy-Host-Token` 头里；来源必须是回环地址。见 `crate::hostauth`。
+//! 2. **口令 / 管理密钥登录**（Python 与外部宿主）：`ADMIN_KEY`（≥20 字符）登录，
+//!    会话存内存，cookie 与 `X-Admin-Token` 都支持。
 //!
-//! 鉴权：ADMIN_KEY（≥20 字符）或管理令牌登录，会话存内存；cookie 与
-//! \`X-Admin-Token\` 都支持。未配置 ADMIN_KEY 时管理面整体关闭（403），
-//! 避免「默认没有口令」把管理接口裸奔。
+//! 未配置 `ADMIN_KEY` 时，第 2 条路只在「配置了宿主令牌」之外才关闭——桌面端场景
+//! 本来就不需要口令，不能因为没配 `ADMIN_KEY` 就把管理面整体 403。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -51,6 +52,12 @@ impl AdminState {
         Self { key: Some(key.to_string()), sessions: Mutex::new(HashMap::new()) }
     }
 
+    /// 只靠宿主令牌鉴权（桌面端场景，不配 ADMIN_KEY）。会话表仍保留给
+    /// `/sessions/revoke` 这类端点一个一致的数据结构。
+    pub fn host_only() -> Self {
+        Self { key: None, sessions: Mutex::new(HashMap::new()) }
+    }
+
     fn verify_key(&self, candidate: &str) -> bool {
         match &self.key {
             Some(key) => key == candidate,
@@ -88,7 +95,7 @@ fn forbidden(message: &str) -> Response {
     (StatusCode::FORBIDDEN, Json(json!({"detail": message}))).into_response()
 }
 
-/// 从 cookie 或 \`X-Admin-Token\` 取会话。
+/// 从 cookie 或 `X-Admin-Token` 取会话。
 fn session_of(state: &AdminState, headers: &HeaderMap) -> Option<(String, String, &'static str)> {
     let mut token = headers
         .get("x-admin-token")
@@ -116,8 +123,23 @@ fn session_of(state: &AdminState, headers: &HeaderMap) -> Option<(String, String
     Some((token, session.csrf.clone(), session.role))
 }
 
-fn require_admin(state: &AdminState, headers: &HeaderMap) -> Result<(String, String, &'static str), Response> {
-    session_of(state, headers).ok_or_else(|| unauthorized("请先登录管理后台"))
+/// 宿主令牌的虚拟会话标识：没有真实会话，但调用方仍然需要一个稳定的「操作者」名，
+/// 供 `revoke_sessions` 区分「保留自己」与「踢掉别人」。
+const HOST_SESSION_ID: &str = "host";
+
+/// 统一的鉴权入口：先认宿主令牌，再退回到会话。
+///
+/// 返回 `(session_id, csrf, role)` 三元组，调用方无需关心是哪条路进来的。
+fn authorize(state: &AppState, headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> Result<(String, String, &'static str), Response> {
+    if state.host_auth.authorize(headers, peer) {
+        return Ok((HOST_SESSION_ID.to_string(), String::new(), "admin"));
+    }
+    session_of(&state.admin, headers).ok_or_else(|| unauthorized("请先登录管理后台"))
+}
+
+/// 把 `ConnectInfo` 转成鉴权需要的来源 IP（测试里没有注入时是 `None`）。
+fn peer_of(connect: Option<ConnectInfo<std::net::SocketAddr>>) -> Option<std::net::IpAddr> {
+    connect.map(|ConnectInfo(addr)| addr.ip())
 }
 
 pub fn router() -> Router<std::sync::Arc<AppState>> {
@@ -175,7 +197,7 @@ pub fn router() -> Router<std::sync::Arc<AppState>> {
         .route("/oauth/batch/start", post(oauth_stub))
         .route("/oauth/:fid/poll", post(oauth_stub))
         .route("/oauth/:fid", axum::routing::delete(oauth_stub))
-        .route("/test", post(chat_test_stub))
+        .route("/test", post(chat_test))
 }
 
 async fn login_options() -> Json<Value> {
@@ -211,15 +233,25 @@ async fn login(State(state): State<std::sync::Arc<AppState>>, JsonBody(body): Js
     response
 }
 
-async fn logout(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
+/// 登出：只清理**真实会话**。宿主令牌没有会话可清（前端丢掉内存里的令牌即可），
+/// 因此这里不需要 `ConnectInfo`。
+async fn logout(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
     if let Some((token, _, _)) = session_of(&state.admin, &headers) {
         state.admin.sessions.lock().unwrap().remove(&token);
     }
     Json(json!({"ok": true})).into_response()
 }
 
-async fn session_info(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    match require_admin(&state.admin, &headers) {
+async fn session_info(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    match authorize(&state, &headers, peer) {
         Ok((_, csrf, role)) => Json(json!({
             "csrf": csrf, "username": "admin", "role": role, "via": "session",
             "version": env!("CARGO_PKG_VERSION"), "dev": cfg!(debug_assertions),
@@ -260,8 +292,13 @@ async fn keys_of(state: &AppState, reveal: bool) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-async fn overview(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (_, _, role) = match require_admin(&state.admin, &headers) {
+async fn overview(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    let (_, _, role) = match authorize(&state, &headers, peer) {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -288,8 +325,13 @@ async fn overview(State(state): State<std::sync::Arc<AppState>>, headers: Header
     })).into_response()
 }
 
-async fn pool_summary(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn pool_summary(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let accounts = state.pool.rows(&accounts::list_at(&state.cfg.accounts_path));
@@ -299,30 +341,50 @@ async fn pool_summary(State(state): State<std::sync::Arc<AppState>>, headers: He
     })).into_response()
 }
 
-async fn list_keys(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (_, _, role) = match require_admin(&state.admin, &headers) {
+async fn list_keys(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    let (_, _, role) = match authorize(&state, &headers, peer) {
         Ok(value) => value,
         Err(response) => return response,
     };
     Json(json!(keys_of(&state, role == "admin").await)).into_response()
 }
 
-async fn models(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn models(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     Json(json!(catalog::load(&state).await)).into_response()
 }
 
-async fn settings(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn settings(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     Json(state.store.get("settings").unwrap_or_else(|| json!({}))).into_response()
 }
 
-async fn audit_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn audit_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let rows = state.store.get("audit_logs").unwrap_or_else(|| json!([]));
@@ -360,9 +422,11 @@ fn clean_name(value: Option<&Value>) -> Option<String> {
 async fn create_key(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(name) = clean_name(body.get("name")) else {
@@ -413,10 +477,12 @@ async fn create_key(
 async fn update_key(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(id): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -454,9 +520,11 @@ async fn update_key(
 async fn delete_key(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -488,9 +556,11 @@ async fn delete_key(
 async fn reset_usage(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -512,9 +582,11 @@ async fn reset_usage(
 async fn check_models(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let known: Vec<String> = catalog::load(&state)
@@ -550,9 +622,11 @@ fn plain_token(record: &Value, key: &str) -> Option<String> {
 async fn pool_settings(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     if let Some(routing) = body.get("routing").and_then(Value::as_str) {
@@ -585,9 +659,11 @@ async fn pool_settings(
 async fn account_action(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path((aid, action)): axum::extract::Path<(String, String)>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(record) = account_record(&state, &aid) else {
@@ -616,9 +692,11 @@ async fn account_action(
 async fn pool_action(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(action): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     if action != "status" {
@@ -680,15 +758,25 @@ fn ok() -> Response {
     Json(json!({"ok": true})).into_response()
 }
 
-async fn checkin_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn checkin_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     Json(state.store.get("checkin_logs").unwrap_or_else(|| json!([]))).into_response()
 }
 
-async fn checkin_logs_summary(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn checkin_logs_summary(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let logs = state.store.get("checkin_logs").unwrap_or_else(|| json!([]));
@@ -701,8 +789,13 @@ async fn checkin_logs_summary(State(state): State<std::sync::Arc<AppState>>, hea
     Json(json!({"total": total, "failed": failed, "ok": total - failed})).into_response()
 }
 
-async fn clear_checkin_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn clear_checkin_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| value["checkin_logs"] = json!([])) {
@@ -711,8 +804,13 @@ async fn clear_checkin_logs(State(state): State<std::sync::Arc<AppState>>, heade
     }
 }
 
-async fn list_groups(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn list_groups(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("groups").unwrap_or_else(|| json!({}));
@@ -730,9 +828,11 @@ async fn list_groups(State(state): State<std::sync::Arc<AppState>>, headers: Hea
 async fn create_group(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(name) = clean_name(body.get("name")) else { return bad_request("分组名称不能为空") };
@@ -751,10 +851,12 @@ async fn create_group(
 async fn update_group(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(gid): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -777,9 +879,11 @@ async fn update_group(
 async fn delete_group(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(gid): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -790,8 +894,13 @@ async fn delete_group(
     }
 }
 
-async fn egress_view(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn egress_view(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let egress = state.store.get("egress").unwrap_or_else(|| json!({"lines": {}, "bindings": {}}));
@@ -810,9 +919,11 @@ async fn egress_view(State(state): State<std::sync::Arc<AppState>>, headers: Hea
 async fn create_egress_line(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(name) = clean_name(body.get("name")) else { return bad_request("线路名称不能为空") };
@@ -834,10 +945,12 @@ async fn create_egress_line(
 async fn update_egress_line(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(lid): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -860,9 +973,11 @@ async fn update_egress_line(
 async fn delete_egress_line(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(lid): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -879,9 +994,11 @@ async fn delete_egress_line(
 async fn assign_egress(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let aid = body.get("account_id").and_then(Value::as_str).unwrap_or("");
@@ -907,8 +1024,13 @@ async fn assign_egress(
     }
 }
 
-async fn list_users(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn list_users(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("users").unwrap_or_else(|| json!({}));
@@ -926,9 +1048,11 @@ async fn list_users(State(state): State<std::sync::Arc<AppState>>, headers: Head
 async fn create_user(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(username) = clean_name(body.get("username")) else { return bad_request("用户名不能为空") };
@@ -957,10 +1081,12 @@ async fn create_user(
 async fn update_user(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(username): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let password = body.get("password").and_then(Value::as_str).map(pbkdf2_hash);
@@ -988,9 +1114,11 @@ async fn update_user(
 async fn delete_user(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(username): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut last = false;
@@ -1009,8 +1137,13 @@ async fn delete_user(
     }
 }
 
-async fn list_tokens(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn list_tokens(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("api_tokens").unwrap_or_else(|| json!({}));
@@ -1031,9 +1164,11 @@ async fn list_tokens(State(state): State<std::sync::Arc<AppState>>, headers: Hea
 async fn create_token(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(name) = clean_name(body.get("name")) else { return bad_request("令牌名称不能为空") };
@@ -1063,10 +1198,12 @@ async fn create_token(
 async fn update_token(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(tid): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut missing = false;
@@ -1089,9 +1226,11 @@ async fn update_token(
 async fn delete_token(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(tid): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -1102,8 +1241,13 @@ async fn delete_token(
     }
 }
 
-async fn security_config(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn security_config(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     Json(state.store.get("security").unwrap_or_else(|| json!({}))).into_response()
@@ -1112,9 +1256,11 @@ async fn security_config(State(state): State<std::sync::Arc<AppState>>, headers:
 async fn save_security_config(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -1130,8 +1276,13 @@ async fn save_security_config(
     }
 }
 
-async fn list_ip_rules(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn list_ip_rules(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("ip_rules").unwrap_or_else(|| json!({}));
@@ -1149,9 +1300,11 @@ async fn list_ip_rules(State(state): State<std::sync::Arc<AppState>>, headers: H
 async fn create_ip_rule(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(cidr) = clean_name(body.get("cidr")) else { return bad_request("缺少 CIDR") };
@@ -1174,9 +1327,11 @@ async fn create_ip_rule(
 async fn delete_ip_rule(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(rid): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -1187,15 +1342,25 @@ async fn delete_ip_rule(
     }
 }
 
-async fn ip_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn ip_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     Json(state.store.get("ip_access_logs").unwrap_or_else(|| json!([]))).into_response()
 }
 
-async fn clear_ip_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn clear_ip_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| value["ip_access_logs"] = json!([])) {
@@ -1204,8 +1369,13 @@ async fn clear_ip_logs(State(state): State<std::sync::Arc<AppState>>, headers: H
     }
 }
 
-async fn clear_audit_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn clear_audit_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| value["audit_logs"] = json!([])) {
@@ -1214,8 +1384,13 @@ async fn clear_audit_logs(State(state): State<std::sync::Arc<AppState>>, headers
     }
 }
 
-async fn request_logs(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn request_logs(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     // Rust 引擎暂不落请求日志（Python 落 state.request_logs）；先返回空表，
@@ -1223,8 +1398,13 @@ async fn request_logs(State(state): State<std::sync::Arc<AppState>>, headers: He
     Json(state.store.get("request_logs").unwrap_or_else(|| json!([]))).into_response()
 }
 
-async fn usage_stats(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn usage_stats(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let stats = state.store.get("usage_stats").unwrap_or_else(|| json!({}));
@@ -1236,8 +1416,13 @@ async fn usage_stats(State(state): State<std::sync::Arc<AppState>>, headers: Hea
     })).into_response()
 }
 
-async fn list_aliases(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn list_aliases(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("model_aliases").unwrap_or_else(|| json!({}));
@@ -1251,9 +1436,11 @@ async fn list_aliases(State(state): State<std::sync::Arc<AppState>>, headers: He
 async fn save_alias(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(alias) = clean_name(body.get("alias")) else { return bad_request("缺少别名") };
@@ -1270,10 +1457,12 @@ async fn save_alias(
 async fn patch_account(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(aid): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(record) = account_record(&state, &aid) else { return not_found("账号不存在") };
@@ -1298,9 +1487,11 @@ async fn patch_account(
 async fn delete_account(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(aid): axum::extract::Path<String>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(record) = account_record(&state, &aid) else { return not_found("账号不存在") };
@@ -1318,10 +1509,12 @@ async fn delete_account(
 async fn account_limits(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     axum::extract::Path(aid): axum::extract::Path<String>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let Some(record) = account_record(&state, &aid) else { return not_found("账号不存在") };
@@ -1341,8 +1534,13 @@ async fn create_account_stub() -> Response {
     still_python("新增账号（需要凭据导入与扫码）")
 }
 
-async fn credits_snapshot(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn credits_snapshot(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let status = state.store.get("account_status").unwrap_or_else(|| json!({}));
@@ -1356,9 +1554,11 @@ async fn export_key(axum::extract::Path(_id): axum::extract::Path<String>) -> Re
 async fn save_settings(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -1374,8 +1574,13 @@ async fn save_settings(
     }
 }
 
-async fn alerts(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn alerts(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let value = state.store.get("alerts").unwrap_or_else(|| json!({"enabled": false, "password_set": false}));
@@ -1390,9 +1595,11 @@ async fn alerts(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMa
 async fn save_alerts(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     JsonBody(body): JsonBody<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match state.store.update(|value| {
@@ -1430,8 +1637,13 @@ fn cli_key_of(state: &AppState) -> Option<(String, Value)> {
     })
 }
 
-async fn cli_key_get(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn cli_key_get(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     match cli_key_of(&state) {
@@ -1449,8 +1661,13 @@ async fn cli_key_get(State(state): State<std::sync::Arc<AppState>>, headers: Hea
     }
 }
 
-async fn cli_key_rotate(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn cli_key_rotate(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let token = new_token();
@@ -1474,8 +1691,13 @@ async fn cli_key_rotate(State(state): State<std::sync::Arc<AppState>>, headers: 
     }
 }
 
-async fn cli_key_revoke(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state.admin, &headers) {
+async fn cli_key_revoke(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
     let mut last = false;
@@ -1506,12 +1728,137 @@ async fn oauth_stub() -> Response {
     still_python("扫码登录")
 }
 
-async fn chat_test_stub() -> Response {
-    still_python("连接测试（会真实调用上游模型）")
+/// `POST /admin/api/test`：连接测试。
+///
+/// 与 Python 版同一动作：用一条极短的 chat 请求验证「凭据、账号额度、模型权限」
+/// 这条链路是否通。**会真实消耗额度**，所以前端必须先二次确认。
+///
+/// 实现上刻意走与数据面完全相同的路径（`chat::handle_chat`），而不是另写一份
+/// 上游调用：测试通过但真实请求失败，是这个端点最没价值的失败方式。
+///
+/// 与 Python 的差异（记录备查）：
+/// - 不创建临时密钥：`handle_chat` 直接收 `key = None`，效果等同「不受策略限制」；
+/// - 不做「同一时刻只跑一个测试」的互斥：桌面端是单用户，重复点击由前端禁用按钮保证。
+async fn chat_test(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+    JsonBody(body): JsonBody<Value>,
+) -> Response {
+    let peer = peer_of(connect);
+    if let Err(response) = authorize(&state, &headers, peer) {
+        return response;
+    }
+    let models: Vec<String> = catalog::load(&state)
+        .await
+        .iter()
+        .filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    // 默认模型：清单里第一个。与 Python 的 resolve_default_model 口径一致（同样来自目录）。
+    let model = match body.get("model").and_then(Value::as_str) {
+        Some(model) => model.to_string(),
+        None => match models.first() {
+            Some(model) => model.clone(),
+            None => return bad_request("模型目录为空，请先确认账号已登录"),
+        },
+    };
+    if !models.iter().any(|item| item == &model) {
+        return bad_request("请选择列表中的模型");
+    }
+    let prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("请只回复：连接成功");
+    if prompt.trim().is_empty() || prompt.chars().count() > 2000 {
+        return bad_request("测试消息需为 1–2000 个字符");
+    }
+    if accounts::list_at(&state.cfg.accounts_path).is_empty() {
+        return bad_request("请先导入并启用一个账号");
+    }
+
+    let started = std::time::Instant::now();
+    let payload = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1024,
+        "stream": false,
+    });
+    let upstream_headers = HeaderMap::new();
+    let response = crate::chat::handle_chat(state.clone(), incoming_headers(&upstream_headers), payload, None).await;
+    let seconds = (started.elapsed().as_millis() as f64) / 1000.0;
+
+    let status = response.status();
+    let bytes = match axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Json(json!({
+                "ok": false,
+                "error": "读取上游响应失败，请稍后重试。",
+                "seconds": round2(seconds),
+            }))
+            .into_response()
+        }
+    };
+    let data: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let answer = data
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    if status.is_success() && !answer.is_empty() {
+        return Json(json!({
+            "ok": true,
+            "status": status.as_u16(),
+            "answer": answer,
+            "seconds": round2(seconds),
+            "usage": data.get("usage").cloned().unwrap_or(Value::Null),
+        }))
+        .into_response();
+    }
+
+    // 上游的失败信息比一句笼统的「失败」有用得多（额度、模型权限都在里面）。
+    let upstream_message = data
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let detail = if status.is_success() {
+        "上游未返回有效回复，请检查登录凭据、账号额度或模型权限。".to_string()
+    } else if upstream_message.is_empty() {
+        format!("调用失败（HTTP {}），请检查凭据是否有效，稍后重试。", status.as_u16())
+    } else {
+        format!("调用失败（HTTP {}）：{upstream_message}", status.as_u16())
+    };
+    Json(json!({
+        "ok": false,
+        "status": status.as_u16(),
+        "error": detail,
+        "seconds": round2(seconds),
+    }))
+    .into_response()
 }
 
-async fn revoke_sessions(State(state): State<std::sync::Arc<AppState>>, headers: HeaderMap) -> Response {
-    let Ok((keep, _, _)) = require_admin(&state.admin, &headers) else {
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+/// 连接测试里构造「空入参」的客户端头：不伪造 UA，让上游看到的和真实链路一致。
+fn incoming_headers(headers: &HeaderMap) -> std::collections::BTreeMap<String, String> {
+    crate::profile::lower_headers(headers.iter().filter_map(|(name, value)| {
+        value.to_str().ok().map(|value| (name.as_str(), value))
+    }))
+}
+
+async fn revoke_sessions(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = peer_of(connect);
+    let Ok((keep, _, _)) = authorize(&state, &headers, peer) else {
         return unauthorized("请先登录管理后台");
     };
     let mut sessions = state.admin.sessions.lock().unwrap();

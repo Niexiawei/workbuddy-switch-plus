@@ -3,7 +3,7 @@ mod commands;
 mod companion;
 #[cfg(target_os = "macos")]
 mod instance_lock;
-mod proxy_engine;
+mod proxy_service;
 mod reverse_proxy;
 #[cfg(desktop)]
 mod tray;
@@ -152,6 +152,23 @@ fn spawn_background_loops(app: tauri::AppHandle) {
     });
 }
 
+/// 内置反代的自动启动。
+///
+/// 刻意做成「不阻塞、不弹窗、不 panic」：反代是主功能，但它不该拖慢窗口呈现，
+/// 更不该因为一个被占的端口让应用起不来。失败状态由 `ProxyService::status()`
+/// 回给界面，用户在「服务设置 → 内置服务」里能看到原因并改端口。
+fn autostart_proxy(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        let Some(service) = app.try_state::<proxy_service::ProxyService>() else {
+            return;
+        };
+        if let Err(error) = service.start().await {
+            eprintln!("[反代] 自动启动失败：{error}");
+        }
+    });
+}
+
 /// 从命令行参数里取 `--stop-pid=<n>`（提权停止服务用）。
 ///
 /// 「以管理员身份停止」的做法是：桌面端用 `runas` 重新拉起自己并带上这个参数，
@@ -201,7 +218,8 @@ pub fn run() {
         // 反代服务的进程句柄与日志缓冲。它只是「启动器」状态，不参与数据面，
         // 因此不落盘；重新打开桌面端时通过端口探测重新认识服务是否在跑。
         .manage(reverse_proxy::ReverseProxy::default())
-        .manage(proxy_engine::ProxyEngine::new());
+        // 内置反代（Rust）：与主程序同生共死，见 `proxy_service.rs`。
+        .manage(proxy_service::ProxyService::new());
 
     #[cfg(desktop)]
     if !is_screenshot_demo() {
@@ -245,15 +263,19 @@ pub fn run() {
             // README 截图模式只渲染前端虚构数据，禁止读取账号后执行签到、轮换或保活。
             if !is_screenshot_demo() {
                 spawn_background_loops(app.handle().clone());
+                // 内置反代随主程序启动：不阻塞窗口呈现，失败只落到服务设置里。
+                autostart_proxy(app.handle().clone());
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_accounts,
-            commands::proxy_engine_status,
-            commands::proxy_engine_start,
-            commands::proxy_engine_stop,
+            commands::proxy_service_status,
+            commands::proxy_service_start,
+            commands::proxy_service_stop,
+            commands::proxy_service_set_port,
+            commands::proxy_admin_token,
             commands::get_codebuddy_cli_status,
             commands::install_codebuddy_cli_helper,
             commands::enable_codebuddy_cli_proxy,
@@ -377,6 +399,11 @@ pub fn run() {
         // 反代服务本就设计成「关掉桌面端仍继续服务客户端」，不能悄悄改变这个行为。
         if let tauri::RunEvent::Exit = event {
             use tauri::Manager;
+            // 内置反代是进程内服务，进程没了服务就没了：这里只负责把监听
+            // 干净地关掉、让端口立刻可被重新绑定（否则下次启动会无谓地 +1）。
+            if let Some(service) = _app_handle.try_state::<proxy_service::ProxyService>() {
+                service.stop_blocking();
+            }
             if let Some(state) = _app_handle.try_state::<reverse_proxy::ReverseProxy>() {
                 reverse_proxy::shutdown_if_configured(&state);
             }

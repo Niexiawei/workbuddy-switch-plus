@@ -1,30 +1,34 @@
-//! WB-Switch-Plus 内置反代（Rust 版骨架）。
+//! WB-Switch-Plus 内置反代。
 //!
-//! 目标形态见 `docs/reverse-proxy-rust-migration-plan.md`：反代不再是独立 Python
-//! 进程，而是桌面端进程内的一个 axum 监听；webui 通过 BFF 转发到它。
+//! 这是主项目进程内的 axum 监听：由 Tauri 桌面端在启动时拉起（`ProxyService`），
+//! 随主进程退出而关闭，不存在独立的 exe 或第二个宿主。
 //!
-//! P1 只落地「骨架 + 只读状态 + 两个只读端点」：
-//!   · `/health`（含账号数、数据目录、是否可写）
-//!   · `/v1/models`（先用国内版种子清单，真实目录在 P2 接）
-//! 数据面与鉴权在后续阶段补，未实现的路由返回 501 而不是伪装成功。
+//! 数据面：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`（网关密钥自查）。
+//! 管理面：`/admin/api/*`（与 Python 版同契约；未实现的路由返回 501 而不是伪装成功）。
+//!
+//! 端口：`ProxyConfig.port` 是**期望**端口，实际端口由 [`ports`] 在冲突时 +1 决定，
+//! 两者都通过 [`ProxyHandle::status`] 回给宿主。
 
 pub mod accounts;
 pub mod admin;
-pub mod billing;
 pub mod anthropic;
+pub mod billing;
 pub mod catalog;
 pub mod chat;
 pub mod config;
 pub mod desensitize;
 pub mod errors;
+pub mod hostauth;
 pub mod http;
 pub mod keys;
 pub mod pool;
+pub mod ports;
 pub mod profile;
 pub mod projection;
 pub mod prompt;
 pub mod responses;
 pub mod state;
+pub mod usage;
 pub mod wire;
 
 use std::net::SocketAddr;
@@ -36,28 +40,97 @@ use tokio::task::JoinHandle;
 pub use config::ProxyConfig;
 pub use state::StateStore;
 
+/// 一次启动尝试的失败原因：宿主需要区分「端口全被占」与「别的问题」，
+/// 前者给出改端口入口，后者按普通故障展示。
+#[derive(Debug)]
+pub enum StartError {
+    /// 期望端口起连续 20 个都被占用。
+    PortExhausted { desired: u16, tried: Vec<u16> },
+    /// 其它 I/O 错误（权限、地址非法……）。
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PortExhausted { desired, tried } => write!(
+                f,
+                "端口 {desired} 起连续 {} 个端口都被占用，请手动指定端口",
+                tried.len()
+            ),
+            Self::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for StartError {}
+
+impl From<std::io::Error> for StartError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// 运行中的反代句柄。持有监听地址与优雅退出通道。
 pub struct ProxyHandle {
     addr: SocketAddr,
+    /// 期望端口。与 `addr.port()` 不同即说明启动时发生过偏移。
+    desired_port: u16,
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl ProxyHandle {
-    /// 在 `cfg.host:cfg.port` 上启动监听；port = 0 时由系统分配（测试用）。
-    pub async fn start(cfg: ProxyConfig, store: StateStore) -> std::io::Result<Self> {
-        let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
+    /// 在 `cfg.host:cfg.port` 上启动监听；端口被占用时按 +1 逐个重试（最多 20 个）。
+    ///
+    /// `port = 0` 是特例：交给系统随机分配（测试用），不做偏移。
+    pub async fn start(cfg: ProxyConfig, store: StateStore) -> Result<Self, StartError> {
+        Self::start_with_auth(cfg, store, crate::hostauth::HostAuth::from_env()).await
+    }
+
+    /// 同上，但显式指定宿主令牌（桌面端在内存里生成，不读环境变量）。
+    pub async fn start_with_auth(
+        cfg: ProxyConfig,
+        store: StateStore,
+        auth: crate::hostauth::HostAuth,
+    ) -> Result<Self, StartError> {
+        let desired = cfg.port;
+        if desired == 0 {
+            return Self::bind(cfg, store, auth, 0, 0).await;
+        }
+        let probe = ports::pick_port(desired, |port| bindable(&cfg.host, port))?;
+        if probe.exhausted() && probe.actual == desired {
+            return Err(StartError::PortExhausted { desired, tried: probe.occupied });
+        }
+        Self::bind(cfg, store, auth, probe.actual, desired).await
+    }
+
+    /// 直接在指定端口上绑定（不做偏移）。EADDRINUSE 原样返回给调用方，
+    /// 由它决定要不要再走一轮偏移。
+    async fn bind(
+        cfg: ProxyConfig,
+        store: StateStore,
+        auth: crate::hostauth::HostAuth,
+        port: u16,
+        desired_port: u16,
+    ) -> Result<Self, StartError> {
+        let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), port)).await?;
         let addr = listener.local_addr()?;
-        let app = http::router(Arc::new(http::AppState::new(cfg, store)));
+        let app = http::router(Arc::new(http::AppState::new(cfg, store, auth)));
         let (tx, rx) = oneshot::channel::<()>();
         let join = tokio::spawn(async move {
-            let _ = axum::serve(listener, app)
+            let _ = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .with_graceful_shutdown(async {
                     let _ = rx.await;
                 })
                 .await;
         });
-        Ok(Self { addr, shutdown: Some(tx), join: Some(join) })
+        Ok(Self {
+            addr,
+            desired_port: if desired_port == 0 { addr.port() } else { desired_port },
+            shutdown: Some(tx),
+            join: Some(join),
+        })
     }
 
     pub fn addr(&self) -> SocketAddr {
@@ -68,11 +141,19 @@ impl ProxyHandle {
         format!("http://{}", self.addr)
     }
 
+    /// 期望端口（配置里的值）。界面据此显示「8787 被占用，已在 8788 运行」。
+    pub fn desired_port(&self) -> u16 {
+        self.desired_port
+    }
+
+    /// 给状态接口用的一份快照。`engine` 恒为 `rust`（Python 版另有 `python`）。
     pub fn status(&self) -> serde_json::Value {
         serde_json::json!({
             "running": self.shutdown.is_some(),
             "baseUrl": self.base_url(),
             "port": self.addr.port(),
+            "desiredPort": self.desired_port,
+            "portShifted": self.addr.port() != self.desired_port,
             "engine": "rust",
         })
     }
@@ -85,5 +166,17 @@ impl ProxyHandle {
         if let Some(join) = self.join.take() {
             let _ = join.await;
         }
+    }
+}
+
+/// 探测用的「先绑再放」：`ports::pick_port` 需要同步的可用性判断。
+fn bindable(host: &str, port: u16) -> std::io::Result<bool> {
+    match std::net::TcpListener::bind((host, port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => Ok(false),
+        Err(error) => Err(error),
     }
 }

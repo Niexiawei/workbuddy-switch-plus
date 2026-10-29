@@ -15,6 +15,8 @@ futures-util = "0.3"
 bytes = "1"
 sha2 = "0.10"
 pbkdf2 = "0.12"
+# 宿主令牌的随机源：只用于生成一个不可预测的管理面凭据。
+getrandom = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -45,7 +45,7 @@ fn app_with(upstream: String) -> (tempfile::TempDir, Router) {
         billing_base: "http://127.0.0.1:1".to_string(),
     };
     let store = StateStore::open(root.join("state.json")).unwrap();
-    (dir, router(Arc::new(AppState::new(cfg, store))))
+    (dir, router(Arc::new(AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled()))))
 }
 
 async fn models_json(app: Router) -> Value {

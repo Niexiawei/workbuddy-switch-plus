@@ -45,7 +45,7 @@ fn app_with_billing(billing_base: &str) -> (tempfile::TempDir, axum::Router) {
         billing_base: billing_base.to_string(),
     };
     let store = StateStore::open_writable(root.join("state.json")).unwrap();
-    let state = AppState::new(cfg, store).with_admin(Arc::new(AdminState::with_key(KEY)));
+    let state = AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled()).with_admin(Arc::new(AdminState::with_key(KEY)));
     (dir, router(Arc::new(state)))
 }
 
@@ -167,7 +167,7 @@ async fn read_only_state_rejects_writes() {
         billing_base: "http://127.0.0.1:1".to_string(),
     };
     let store = StateStore::open(root.join("state.json")).unwrap();   // 只读
-    let state = AppState::new(cfg, store).with_admin(Arc::new(AdminState::with_key(KEY)));
+    let state = AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled()).with_admin(Arc::new(AdminState::with_key(KEY)));
     let app = router(Arc::new(state));
 
     let (_, body) = call(app.clone(), "POST", "/admin/api/login", Some(json!({"key": KEY})), None).await;

@@ -77,31 +77,51 @@ pub fn get_accounts() -> Value {
 
 /// GET /api/codebuddy-cli/status —— CodeBuddy CLI helper 轮换状态（不含 token）。
 ///
-/// async + spawn_blocking：状态检测可能执行 ps / helper 定位等子进程，
-/// 避免在账号页挂载刷新时阻塞主线程造成页面卡顿。
-/// GET /api/proxy-engine/status —— 进程内 Rust 反代的状态（P1 骨架）。
+/// 内置反代服务的状态（含实际端口、是否偏移、宿主令牌）。
+///
+/// 反代随主程序启动，这个命令主要用于界面刷新与排障；`proxy_service_start`
+/// 只在「停机后手动再启用」时才需要。
 #[tauri::command]
-pub async fn proxy_engine_status(
-    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
+pub async fn proxy_service_status(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
 ) -> Result<Value, String> {
     Ok(state.status())
 }
 
-/// POST /api/proxy-engine/start —— 在桌面端进程内启动反代监听。
+/// 启动内置反代（幂等）。已在运行则直接回状态。
 #[tauri::command]
-pub async fn proxy_engine_start(
-    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
-    port: Option<u16>,
+pub async fn proxy_service_start(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
 ) -> Result<Value, String> {
-    state.start(port).await
+    state.start().await
 }
 
-/// POST /api/proxy-engine/stop —— 优雅关闭进程内反代。
+/// 停止内置反代。用户主动停掉后，本轮会话不会自动重启（见 `proxy_service.rs`）。
 #[tauri::command]
-pub async fn proxy_engine_stop(
-    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
+pub async fn proxy_service_stop(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
 ) -> Result<Value, String> {
-    state.stop().await
+    Ok(state.stop().await)
+}
+
+/// 改监听端口：写入设置并立即重绑。
+#[tauri::command]
+pub async fn proxy_service_set_port(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
+    port: u16,
+) -> Result<Value, String> {
+    state.set_port(port).await
+}
+
+/// 取宿主令牌（放进 `X-Proxy-Host-Token` 头）。
+///
+/// 令牌只存在进程内存里，不落盘、不写日志；前端每次请求前取用即可，
+/// 因此不会出现「口令写在 localStorage」那种情况。
+#[tauri::command]
+pub async fn proxy_admin_token(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
+) -> Result<String, String> {
+    Ok(state.host_token())
 }
 
 #[tauri::command]
