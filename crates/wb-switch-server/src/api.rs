@@ -68,6 +68,10 @@ pub fn router() -> Router {
         )
         .route("/api/codebuddy-cli/switch", post(api_codebuddy_cli_switch))
         .route(
+            "/api/codebuddy-cli/proxy",
+            post(api_codebuddy_cli_proxy_enable).delete(api_codebuddy_cli_proxy_disable),
+        )
+        .route(
             "/api/codebuddy-cn-ide/status",
             get(api_codebuddy_cn_ide_status),
         )
@@ -312,6 +316,34 @@ async fn api_codebuddy_cli_switch(Json(body): Json<Value>) -> Response {
     // 入参 `closeRunningCli` 已废弃：后端一律先关闭正在运行的 CLI 再写状态，忽略该值。
     // 无头模式不投递系统通知，切号结果（含关闭数量）照常返回给调用方。
     match codebuddy_cli::switch_active_account(id) {
+        Ok(result) => json_ok(result),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// 开启反代模式：CLI 指向本机反代，凭据换成一枚反代密钥。
+///
+/// 与 Tauri 命令同名同义，webui 走的就是这条；body 用 camelCase（前端习惯），
+/// 同时容忍 snake_case，避免调用方各写一套。
+async fn api_codebuddy_cli_proxy_enable(Json(body): Json<Value>) -> Response {
+    let base_url = body
+        .get("baseUrl")
+        .or_else(|| body.get("base_url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let token = body
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match codebuddy_cli::enable_proxy(base_url, token) {
+        Ok(result) => json_ok(result),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// 关闭反代模式：恢复直连认证。
+async fn api_codebuddy_cli_proxy_disable() -> Response {
+    match codebuddy_cli::disable_proxy() {
         Ok(result) => json_ok(result),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }

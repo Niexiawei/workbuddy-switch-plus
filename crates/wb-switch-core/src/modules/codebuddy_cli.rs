@@ -540,6 +540,202 @@ where
         })
 }
 
+// ── 反代模式（G9）─────────────────────────────────────────────────────────
+//
+// 反代模式不改 CLI 的请求逻辑，只把「去哪儿、拿什么凭据」换掉：
+//   CODEBUDDY_BASE_URL   → 本机反代（例如 http://127.0.0.1:8787/v1）
+//   CODEBUDDY_AUTH_TOKEN → 反代专用密钥（不是账号 token）
+// 账号由反代服务的账号池在请求粒度调度，所以切号不再需要改 settings、也不再关进程。
+
+const PROXY_STATE_KEY: &str = "proxy";
+
+/// 校验并归一化反代地址：只接受 http/https，去掉结尾斜杠。
+fn normalize_proxy_base(base_url: &str) -> Result<String, String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("反代地址不能为空".to_string());
+    }
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("反代地址必须以 http:// 或 https:// 开头".to_string());
+    }
+    Ok(base.to_string())
+}
+
+/// 反代密钥的展示用摘要（状态里绝不存明文）。
+fn proxy_token_hint(token: &str) -> String {
+    let clean = clean_bearer_token(token);
+    if clean.chars().count() <= 8 {
+        return "…".to_string();
+    }
+    format!("{}…{}", &clean[..5], &clean[clean.len() - 4..])
+}
+
+/// 把反代模式的三项环境变量写进 settings（纯内存，不落盘）。
+fn apply_proxy_env(value: &mut Value, base_url: &str, token: &str) -> Result<(), String> {
+    let env = env_object_mut(value)?;
+    env.insert(
+        CODEBUDDY_INTERNET_ENVIRONMENT.to_string(),
+        json!(CN_INTERNET_ENVIRONMENT),
+    );
+    env.insert(CODEBUDDY_BASE_URL.to_string(), json!(base_url));
+    env.insert(
+        CODEBUDDY_AUTH_TOKEN.to_string(),
+        json!(clean_bearer_token(token)),
+    );
+    Ok(())
+}
+
+/// 退出反代模式：移除反代地址；Windows 恢复账号 token，其他平台交回 helper。
+fn clear_proxy_env(value: &mut Value, restore_token: Option<&str>) -> Result<(), String> {
+    let env = env_object_mut(value)?;
+    env.remove(CODEBUDDY_BASE_URL);
+    match restore_token {
+        Some(token) if !clean_bearer_token(token).is_empty() => {
+            env.insert(
+                CODEBUDDY_AUTH_TOKEN.to_string(),
+                json!(clean_bearer_token(token)),
+            );
+        }
+        _ => {
+            env.remove(CODEBUDDY_AUTH_TOKEN);
+        }
+    }
+    Ok(())
+}
+
+fn proxy_enabled_in(state: &Value) -> bool {
+    state
+        .get(PROXY_STATE_KEY)
+        .and_then(|proxy| proxy.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn proxy_summary(state: &Value) -> Value {
+    let proxy = state.get(PROXY_STATE_KEY).cloned().unwrap_or_else(|| json!({}));
+    json!({
+        "enabled": proxy_enabled_in(state),
+        "baseUrl": proxy.get("baseUrl").cloned().unwrap_or(Value::Null),
+        "tokenHint": proxy.get("tokenHint").cloned().unwrap_or(Value::Null),
+        "enabledAt": proxy.get("enabledAt").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn write_cli_state(state: &Value) -> Result<(), String> {
+    std::fs::create_dir_all(rotate_dir()).map_err(|_| {
+        auth_config_error("状态阶段", "无法创建 CLI 状态目录，请检查用户目录权限")
+    })?;
+    let content = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
+    atomic_write(&state_path(), &content)
+        .map_err(|_| auth_config_error("状态阶段", "无法写入 CLI 状态，请检查文件权限"))
+}
+
+/// 开启反代模式：CLI 指向本机反代，凭据换成一枚可单独吊销的反代密钥。
+///
+/// 只改 settings，不动账号库；切换账号由反代服务负责，因此本函数与
+/// switch_active_account 都不会关闭正在运行的 CLI。
+pub fn enable_proxy(base_url: &str, token: &str) -> Result<Value, String> {
+    let base = normalize_proxy_base(base_url)?;
+    let token = clean_bearer_token(token.trim()).to_string();
+    if token.is_empty() {
+        return Err("反代密钥不能为空".to_string());
+    }
+    ensure_no_process_env_override()?;
+
+    let settings = settings_path();
+    let previous = std::fs::read_to_string(&settings).ok();
+    let mut value = previous
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| "CodeBuddy settings.json 不是有效 JSON".to_string())?
+        .unwrap_or_else(|| json!({}));
+    apply_cli_region_env(&mut value, WbVariant::Cn)?;
+    apply_proxy_env(&mut value, &base, &token)?;
+    if let Err(error) = persist_settings_at(&settings, &value)
+        .and_then(|_| sync_cli_runtime_cache(&settings, WbVariant::Cn))
+    {
+        restore_file(&settings, previous.as_deref());
+        return Err(error);
+    }
+    // 写入后再读回校验：settings 被别的进程同时改写时能立刻发现。
+    let persisted = read_json_file(&settings)
+        .ok_or_else(|| auth_config_error("配置阶段", "写入后无法重新读取 CodeBuddy settings.json"))?;
+    if settings_env_token(&persisted).map(clean_bearer_token) != Some(token.as_str()) {
+        restore_file(&settings, previous.as_deref());
+        return Err(auth_config_error("配置阶段", "写入后的认证信息与反代密钥不一致"));
+    }
+
+    let mut state = load_state();
+    state[PROXY_STATE_KEY] = json!({
+        "enabled": true,
+        "baseUrl": base,
+        "tokenHint": proxy_token_hint(&token),
+        "enabledAt": now_ms(),
+    });
+    if let Err(error) = write_cli_state(&state) {
+        restore_file(&settings, previous.as_deref());
+        return Err(error);
+    }
+
+    Ok(json!({
+        "ok": true,
+        "configured": true,
+        "authMode": "proxy",
+        "proxy": proxy_summary(&state),
+        "settingsPath": settings.to_string_lossy(),
+        "message": "已切换为反代模式；请重启一次 CodeBuddy CLI 让新配置生效。之后换号在反代服务页操作，无需再重启",
+    }))
+}
+
+/// 关闭反代模式：恢复直连认证。
+pub fn disable_proxy() -> Result<Value, String> {
+    let settings = settings_path();
+    let previous = std::fs::read_to_string(&settings).ok();
+    let mut value = previous
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| "CodeBuddy settings.json 不是有效 JSON".to_string())?
+        .unwrap_or_else(|| json!({}));
+
+    // Windows 直连靠 settings 里的账号 token；其他平台交回 apiKeyHelper。
+    let restore_token = if cfg!(windows) {
+        let accounts = account::load_accounts();
+        let state = load_state();
+        state_account_index(&state, &accounts)
+            .and_then(|(index, _)| accounts.get(index))
+            .map(settings_account_token)
+            .transpose()?
+            .map(str::to_string)
+    } else {
+        None
+    };
+    clear_proxy_env(&mut value, restore_token.as_deref())?;
+    // 国内版：保留 internal，确保 BASE_URL 已被移除。
+    apply_cli_region_env(&mut value, WbVariant::Cn)?;
+    if let Err(error) = persist_settings_at(&settings, &value)
+        .and_then(|_| sync_cli_runtime_cache(&settings, WbVariant::Cn))
+    {
+        restore_file(&settings, previous.as_deref());
+        return Err(error);
+    }
+
+    let mut state = load_state();
+    state[PROXY_STATE_KEY] = json!({"enabled": false});
+    if let Err(error) = write_cli_state(&state) {
+        restore_file(&settings, previous.as_deref());
+        return Err(error);
+    }
+
+    Ok(json!({
+        "ok": true,
+        "authMode": if cfg!(windows) { "settings-env" } else { "api-key-helper" },
+        "proxy": proxy_summary(&state),
+        "message": "已关闭反代模式；重启 CLI 后恢复直连",
+    }))
+}
+
 fn write_settings_env_token(value: &mut Value, token: &str) -> Result<(), String> {
     let env = env_object_mut(value)?;
     env.insert(CODEBUDDY_AUTH_TOKEN.to_string(), json!(token));
@@ -1246,6 +1442,7 @@ pub fn status() -> Value {
         "activeAccountName": active.as_ref().and_then(|(_, id)| account::find_account(id).map(|account| account::account_display_name(&account))),
         "activeAccountVariant": active.as_ref().and_then(|(index, _)| accounts.get(*index)).map(WbVariant::from_account).map(WbVariant::as_str),
         "accountCount": accounts.len(),
+        "proxy": proxy_summary(&state),
         "statePath": state_path().to_string_lossy(),
     })
 }
@@ -1288,6 +1485,9 @@ fn install_env_auth() -> Result<Value, String> {
 /// 兼容旧版：早期 helper 是 `helper.sh`（bash + python3），若当前配置的是
 /// wb-switch 的旧 helper，允许直接原地升级，并清理旧文件。
 pub fn install_helper() -> Result<Value, String> {
+    if proxy_enabled_in(&load_state()) {
+        return Err("当前是反代模式：请先关闭反代模式，再配置 CLI 直连认证".to_string());
+    }
     if cfg!(windows) {
         return install_env_auth();
     }
@@ -1448,6 +1648,27 @@ pub fn switch_active_account(account_id: &str) -> Result<Value, String> {
     let variant = WbVariant::from_account(&accounts[index]);
     ensure_region_env_compatible(variant)?;
 
+    // 反代模式：账号由反代服务的池调度，这里只记录桌面端选择，
+    // 不写 settings token、也不关进程 —— 这是「换号免重启」的实现点。
+    if proxy_enabled_in(&load_state()) {
+        let mut state = load_state();
+        state["active"] = json!(index);
+        state["activeAccountId"] = json!(canonical_id);
+        state["updatedAt"] = json!(now_ms());
+        write_cli_state(&state)?;
+        return Ok(json!({
+            "ok": true,
+            "configured": true,
+            "authMode": "proxy",
+            "proxy": true,
+            "activeIndex": index,
+            "activeAccountId": canonical_id,
+            "cliClosed": false,
+            "closedProcessCount": 0,
+            "message": "反代模式下账号由反代服务调度：这里只记录桌面端的选择，CLI 不用重启",
+        }));
+    }
+
     // Windows 先验证并生成完整 settings 值（纯内存，不落盘），避免无效 JSON、
     // 缺失 token 等前置错误造成"CLI 已关、账号没切"。
     let windows_settings = if cfg!(windows) {
@@ -1570,6 +1791,65 @@ mod tests {
     #[test]
     fn empty_accounts_have_no_active_account() {
         assert_eq!(state_account_index(&json!({"active": 0}), &[]), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // 反代模式（G9）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn proxy_env_round_trip() {
+        let mut value = json!({"env": {
+            "CODEBUDDY_INTERNET_ENVIRONMENT": "public",
+            "CODEBUDDY_AUTH_TOKEN": "account-token",
+        }});
+        apply_proxy_env(&mut value, "http://127.0.0.1:8787/v1", "sk-cli-123").unwrap();
+        let env = value["env"].as_object().unwrap();
+        assert_eq!(env.get(CODEBUDDY_BASE_URL).unwrap(), "http://127.0.0.1:8787/v1");
+        assert_eq!(env.get(CODEBUDDY_AUTH_TOKEN).unwrap(), "sk-cli-123");
+        assert_eq!(env.get(CODEBUDDY_INTERNET_ENVIRONMENT).unwrap(), CN_INTERNET_ENVIRONMENT);
+
+        clear_proxy_env(&mut value, Some("account-token")).unwrap();
+        let env = value["env"].as_object().unwrap();
+        assert!(env.get(CODEBUDDY_BASE_URL).is_none(), "反代地址必须被清掉");
+        assert_eq!(env.get(CODEBUDDY_AUTH_TOKEN).unwrap(), "account-token");
+    }
+
+    #[test]
+    fn clear_proxy_env_without_token_hands_back_to_helper() {
+        let mut value = json!({"env": {
+            "CODEBUDDY_BASE_URL": "http://127.0.0.1:8787/v1",
+            "CODEBUDDY_AUTH_TOKEN": "sk-cli-123",
+        }});
+        clear_proxy_env(&mut value, None).unwrap();
+        let env = value["env"].as_object().unwrap();
+        assert!(env.get(CODEBUDDY_BASE_URL).is_none());
+        assert!(env.get(CODEBUDDY_AUTH_TOKEN).is_none(), "非 Windows 应交回 apiKeyHelper");
+    }
+
+    #[test]
+    fn proxy_base_validation() {
+        assert_eq!(
+            normalize_proxy_base(" http://127.0.0.1:8787/v1/ ").unwrap(),
+            "http://127.0.0.1:8787/v1"
+        );
+        assert!(normalize_proxy_base("ftp://example.com").is_err());
+        assert!(normalize_proxy_base("   ").is_err());
+    }
+
+    #[test]
+    fn proxy_summary_defaults_to_disabled() {
+        let summary = proxy_summary(&json!({}));
+        assert_eq!(summary["enabled"], json!(false));
+        assert_eq!(summary["baseUrl"], Value::Null);
+    }
+
+    #[test]
+    fn proxy_token_hint_hides_middle() {
+        let hint = proxy_token_hint("sk-abcdefghijklmnop");
+        assert!(hint.starts_with("sk-ab"));
+        assert!(hint.ends_with("mnop"));
+        assert!(!hint.contains("efghij"));
     }
 
     // -----------------------------------------------------------------------
