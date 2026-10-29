@@ -21,10 +21,6 @@ ROOT=$(pwd -P)
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
-# 产品名与版本：末尾汇总用它精确匹配安装包名（别用字典序找，见第 5 步的注释）
-PRODUCT_NAME=$(node -e "process.stdout.write(require(process.cwd()+'/src-tauri/tauri.conf.json').productName||'')" 2>/dev/null || true)
-APP_VERSION=$(node -e "process.stdout.write(String(require(process.cwd()+'/src-tauri/tauri.conf.json').version||''))" 2>/dev/null || true)
-
 say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '\033[1;33m    [注意] %s\033[0m\n' "$*"; }
@@ -66,10 +62,42 @@ case "$(uname -s)" in
 esac
 
 command -v node >/dev/null 2>&1 || die "找不到 node。请安装 Node 20+：https://nodejs.org"
-NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
+
+# node 能启动 ≠ 能执行 JS。踩过一种很难查的坏法：`node -v` 照常输出，
+# 但任何 `-p`/`-e`/`--check` 都以 ACCESS_VIOLATION 崩掉（Git Bash 里 rc=139，
+# 即 0xC0000005），stdout、stderr **全空**。配上 set -e，整个脚本就
+# 「一个字不说直接退出」，看起来像卡在上一行，查起来极费劲。
+# 所以先让它真跑一段 JS，跑不了就带诊断信息退出。
+NODE_BIN=$(command -v node)
+NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null) || NODE_MAJOR=""
+case "$NODE_MAJOR" in
+  ''|*[!0-9]*)
+    die "node 无法执行 JS：$NODE_BIN
+     先自己复现一下：   node -p \"1+1\"
+     若退出码非 0 且没有任何输出（Windows 上常见 139 / 0xC0000005），
+     说明这个 node 在当前位置起不来 —— 多为 node 安装损坏，或安全软件
+     对 Program Files 下可执行文件的注入/拦截。
+     换一个能跑的 node 再重跑：
+       export PATH=\"/path/to/usable/node-dir:\$PATH\"
+       node -p \"1+1\"     # 能输出 2 就对了
+     注意 npm / npx 同样是靠 node 跑脚本的，PATH 里必须换成好的那个。" ;;
+esac
 [ "$NODE_MAJOR" -ge 20 ] || die "需要 Node 20 或更高，当前 $(node -v)"
 ok "Node $(node -v)"
-[ -n "$PRODUCT_NAME" ] && ok "产品名：$PRODUCT_NAME   版本：${APP_VERSION:-未知}"
+
+# 产品名与版本：第 5 步靠它精确匹配安装包名（别用字典序找，见第 5 步的注释）。
+# 放在 node 自检之后，读不到就直接报错，而不是像以前那样被 2>/dev/null 吞成空字符串。
+TAURI_CONF="src-tauri/tauri.conf.json"
+[ -f "$TAURI_CONF" ] || die "找不到 $TAURI_CONF（请在仓库根目录运行本脚本）"
+PRODUCT_NAME=$(node -e "process.stdout.write(require(process.cwd()+'/$TAURI_CONF').productName||'')") \
+  || die "读取 $TAURI_CONF 的 productName 失败"
+APP_VERSION=$(node -e "process.stdout.write(String(require(process.cwd()+'/$TAURI_CONF').version||''))") \
+  || die "读取 $TAURI_CONF 的 version 失败"
+if [ -n "$PRODUCT_NAME" ]; then
+  ok "产品名：$PRODUCT_NAME   版本：${APP_VERSION:-未知}"
+else
+  warn "$TAURI_CONF 里没有 productName，第 5 步只能退回「找最新的安装包」"
+fi
 
 # rustup 的 shim 在部分 Windows 安装上是坏的：`rustc -vV` 无输出但退出码为 0，
 # cargo 会因此静默不编译（不报错、直接跳过），表现为"构建成功但产物没变"。
