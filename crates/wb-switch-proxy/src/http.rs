@@ -1,0 +1,210 @@
+//! HTTP 路由（P1 骨架）。
+//!
+//! 已实现：`/health`、`/v1/models`（种子清单）。
+//! 未实现：数据面 4 条、管理面 76 条、鉴权——统一返回 501，避免「看起来能用」。
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Instant;
+
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::{get, post};
+use axum::Router;
+use serde_json::{json, Value};
+
+use crate::accounts;
+use crate::anthropic;
+use crate::catalog;
+use crate::chat;
+use crate::prompt;
+use crate::config::ProxyConfig;
+use crate::profile;
+use crate::projection;
+use crate::responses;
+use crate::state::StateStore;
+
+pub struct AppState {
+    pub cfg: ProxyConfig,
+    pub store: Arc<StateStore>,
+    pub pool: Arc<crate::pool::Pool>,
+    pub admin: Arc<crate::admin::AdminState>,
+    pub started_at: Instant,
+    /// 模型目录缓存（60s）。放这里而不是模块级静态：测试之间不会串。
+    pub catalog: std::sync::Mutex<Option<(Instant, Vec<Value>)>>,
+}
+
+impl AppState {
+    pub fn new(cfg: ProxyConfig, store: StateStore) -> Self {
+        let store = Arc::new(store);
+        let pool = Arc::new(crate::pool::Pool::new(store.clone(), cfg.accounts_path.clone()));
+        let admin = Arc::new(crate::admin::AdminState::from_env());
+        Self { cfg, store, pool, admin, started_at: Instant::now(), catalog: std::sync::Mutex::new(None) }
+    }
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .nest("/admin/api", crate::admin::router())
+        .route("/health", get(health))
+        .route("/v1/models", get(models))
+        .route("/v1/chat/completions", post(chat_handler))
+        .route("/v1/responses", post(responses_handler))
+        .route("/v1/messages", post(messages_handler))
+        .route("/v1/messages/count_tokens", post(count_tokens))
+        .with_state(state)
+}
+
+impl AppState {
+    /// 替换管理面状态（测试与自建宿主用，避免依赖进程环境变量）。
+    pub fn with_admin(mut self, admin: Arc<crate::admin::AdminState>) -> Self {
+        self.admin = admin;
+        self
+    }
+}
+
+async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let accounts = accounts::list_at(&state.cfg.accounts_path);
+    Json(json!({
+        "status": "ok",
+        "mode": "rust",
+        "version": env!("CARGO_PKG_VERSION"),
+        "engine": "rust",
+        "uptimeSeconds": state.started_at.elapsed().as_secs(),
+        "accounts": accounts.len(),
+        "dataDir": state.cfg.data_dir.to_string_lossy(),
+        "accountsPath": state.cfg.accounts_path.to_string_lossy(),
+        "stateWritable": state.store.writable(),
+        // 骨架阶段明确标注能力边界，客户端不应把 501 当成临时故障重试。
+        "capabilities": {
+            "models": true,
+            "chat": true,
+            "admin": true,
+            "auth": true,
+        },
+    }))
+}
+
+async fn chat_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let model = payload.get("model").and_then(Value::as_str);
+    let key = match crate::keys::authenticate(&state.store, &headers, model) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    chat::handle_chat(state, incoming_headers(&headers), payload, key).await
+}
+
+
+async fn messages_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str)) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    let incoming = incoming_headers(&headers);
+    let client_stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let model = payload.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut body = anthropic::request_to_chat(&payload);
+    // 适配器已经拼好 system 消息，仍需过一遍身份过滤与 11128 改写。
+    prompt::normalize_body(&mut body);
+    if chat::desensitize_enabled() {
+        crate::desensitize::desensitize_body(&mut body, &["system", "developer"]);
+    }
+    let response = match chat::open_upstream(&state, &incoming, &body, key.as_ref()).await {
+        Ok(response) => response,
+        Err(response) => return response,
+    };
+    if client_stream {
+        return anthropic::stream_response(response, model.clone());
+    }
+    let text = match response.text().await {
+        Ok(text) => text,
+        Err(error) => return chat::transport_error_response(&error.to_string()),
+    };
+    match chat::aggregate_sse(&text) {
+        Some(completion) => Json(anthropic::completion_to_message(&completion, &model)).into_response(),
+        None => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"type": "error", "error": {"type": "invalid_response", "message": "上游响应无法聚合"}})),
+        )
+            .into_response(),
+    }
+}
+
+async fn responses_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str)) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    let incoming = incoming_headers(&headers);
+    let client_stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let model = payload.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut body = responses::request_to_chat(&payload);
+    prompt::normalize_body(&mut body);
+    if chat::desensitize_enabled() {
+        crate::desensitize::desensitize_body(&mut body, &["system", "developer"]);
+    }
+    // 长上下文投影：默认关闭（与 Python 的 CODEBUDDY_LOSSY_PROJECTION 默认一致），
+    // 需要压缩 agentic 脚手架时设 WB_PROXY_LOSSY_PROJECTION=1。
+    let (projected, _stats) = projection::project(&body, projection::preserve_by_default());
+    body = projected;
+    let response = match chat::open_upstream(&state, &incoming, &body, key.as_ref()).await {
+        Ok(response) => response,
+        Err(response) => return response,
+    };
+    if client_stream {
+        return responses::stream_response(response, model);
+    }
+    let text = match response.text().await {
+        Ok(text) => text,
+        Err(error) => return chat::transport_error_response(&error.to_string()),
+    };
+    match chat::aggregate_sse(&text) {
+        Some(completion) => Json(responses::completion_to_response(&completion, &model)).into_response(),
+        None => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"type": "error", "error": {"type": "invalid_response", "message": "上游响应无法聚合"}})),
+        )
+            .into_response(),
+    }
+}
+
+async fn count_tokens(Json(payload): Json<Value>) -> Json<Value> {
+    // 粗估：4 个字符 ≈ 1 token；只用于客户端的上下文预算，不参与计费。
+    let text = payload
+        .get("messages")
+        .map(|messages| messages.to_string())
+        .unwrap_or_default()
+        + &payload.get("system").map(|system| system.to_string()).unwrap_or_default();
+    Json(serde_json::json!({"input_tokens": (text.chars().count() / 4).max(1)}))
+}
+
+fn incoming_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
+    let pairs: Vec<(String, String)> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
+    profile::lower_headers(pairs.iter().map(|(key, value)| (key.as_str(), value.as_str())))
+}
+
+async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(response) = crate::keys::authenticate(&state.store, &headers, None) {
+        return response;
+    }
+    Json(json!({ "object": "list", "data": catalog::load(&state).await })).into_response()
+}
+
