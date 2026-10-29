@@ -79,6 +79,31 @@ pub fn get_accounts() -> Value {
 ///
 /// async + spawn_blocking：状态检测可能执行 ps / helper 定位等子进程，
 /// 避免在账号页挂载刷新时阻塞主线程造成页面卡顿。
+/// GET /api/proxy-engine/status —— 进程内 Rust 反代的状态（P1 骨架）。
+#[tauri::command]
+pub async fn proxy_engine_status(
+    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
+) -> Result<Value, String> {
+    Ok(state.status())
+}
+
+/// POST /api/proxy-engine/start —— 在桌面端进程内启动反代监听。
+#[tauri::command]
+pub async fn proxy_engine_start(
+    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
+    port: Option<u16>,
+) -> Result<Value, String> {
+    state.start(port).await
+}
+
+/// POST /api/proxy-engine/stop —— 优雅关闭进程内反代。
+#[tauri::command]
+pub async fn proxy_engine_stop(
+    state: tauri::State<'_, crate::proxy_engine::ProxyEngine>,
+) -> Result<Value, String> {
+    state.stop().await
+}
+
 #[tauri::command]
 pub async fn get_codebuddy_cli_status() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(codebuddy_cli::status)
@@ -94,6 +119,34 @@ pub async fn install_codebuddy_cli_helper(app: tauri::AppHandle) -> Result<Value
         .map_err(|e| e.to_string())??;
     // 写入 settings.json 与随后的状态重算之间存在短暂窗口，让前端立即重读，
     // 避免把「刚写完、正在校验」误显示为脱节。
+    crate::notify_codebuddy_cli_updated(&app);
+    Ok(result)
+}
+
+/// POST /api/codebuddy-cli/proxy —— 开启反代模式：CLI 指向本机反代，凭据换成反代密钥。
+///
+/// 只改 settings.json 的环境变量，不动账号库；换号由反代服务负责，无需重启 CLI。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn enable_codebuddy_cli_proxy(
+    app: tauri::AppHandle,
+    base_url: String,
+    token: String,
+) -> Result<Value, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codebuddy_cli::enable_proxy(&base_url, &token)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    crate::notify_codebuddy_cli_updated(&app);
+    Ok(result)
+}
+
+/// DELETE /api/codebuddy-cli/proxy —— 关闭反代模式，恢复直连认证。
+#[tauri::command]
+pub async fn disable_codebuddy_cli_proxy(app: tauri::AppHandle) -> Result<Value, String> {
+    let result = tauri::async_runtime::spawn_blocking(codebuddy_cli::disable_proxy)
+        .await
+        .map_err(|e| e.to_string())??;
     crate::notify_codebuddy_cli_updated(&app);
     Ok(result)
 }

@@ -3,6 +3,7 @@ mod commands;
 mod companion;
 #[cfg(target_os = "macos")]
 mod instance_lock;
+mod proxy_engine;
 mod reverse_proxy;
 #[cfg(desktop)]
 mod tray;
@@ -199,7 +200,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 反代服务的进程句柄与日志缓冲。它只是「启动器」状态，不参与数据面，
         // 因此不落盘；重新打开桌面端时通过端口探测重新认识服务是否在跑。
-        .manage(reverse_proxy::ReverseProxy::default());
+        .manage(reverse_proxy::ReverseProxy::default())
+        .manage(proxy_engine::ProxyEngine::new());
 
     #[cfg(desktop)]
     if !is_screenshot_demo() {
@@ -249,8 +251,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_accounts,
+            commands::proxy_engine_status,
+            commands::proxy_engine_start,
+            commands::proxy_engine_stop,
             commands::get_codebuddy_cli_status,
             commands::install_codebuddy_cli_helper,
+            commands::enable_codebuddy_cli_proxy,
+            commands::disable_codebuddy_cli_proxy,
             commands::switch_codebuddy_cli_account,
             commands::get_codebuddy_cn_ide_status,
             commands::switch_codebuddy_cn_ide_account,
