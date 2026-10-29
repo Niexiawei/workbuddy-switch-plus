@@ -21,6 +21,10 @@ from .iputil import ip_matches
 
 DEFAULT_REALM = ""
 
+#: 「CodeBuddy CLI 专用」密钥的用途标记。CLI 需要一个长期有效、可单独吊销的
+#: 凭据；把它混在通用密钥里，用户就没法一眼看出哪一枚是给 CLI 的。
+CLI_PURPOSE = "cli"
+
 
 def _hash(token: str) -> str:
     import hashlib
@@ -125,6 +129,7 @@ def public_key(kid: str, item: dict) -> dict:
         "created": item.get("created"),
         "last_used_at": item.get("last_used_at"),
         "ips": list(item.get("ips") or []),
+        "purpose": norm_purpose(item.get("purpose")),
     }
 
 
@@ -164,9 +169,16 @@ def list_keys(store, *, reveal_secret: bool = False) -> list[dict]:
     return out
 
 
+def norm_purpose(value: object) -> str:
+    """密钥用途：目前只认 `cli`（CodeBuddy CLI 专用），其余一律当通用密钥。"""
+    text = str(value or "").strip().lower()
+    return CLI_PURPOSE if text == CLI_PURPOSE else ""
+
+
 def create_key(store, name, *, value=None, expires_at=None, max_ips=0,
                ip_allowlist=None, models=None, realm="", quota=0,
                quota_credit=0, enabled=True, created_by="", groups=None,
+               purpose="",
                ) -> tuple[str, str]:
     import secrets
     token = value or "sk-wb-" + secrets.token_urlsafe(32)
@@ -192,11 +204,80 @@ def create_key(store, name, *, value=None, expires_at=None, max_ips=0,
         "created": int(time.time()),
         "last_used_at": None,
         "created_by": str(created_by or "")[:64],
+        "purpose": norm_purpose(purpose),
     }
     with store.lock:
         if len(store.data["keys"]) >= 100:
             raise HTTPException(400, "最多保存 100 枚 API Key")
         store.data["keys"][kid] = entry
+        store.save()
+    return kid, token
+
+
+def find_cli_key(store) -> dict | None:
+    """当前可用的 CLI 专用密钥（启用且未过期），没有就 None。"""
+    now = time.time()
+    with store.lock:
+        for kid, item in store.data["keys"].items():
+            if norm_purpose(item.get("purpose")) != CLI_PURPOSE:
+                continue
+            if not item.get("enabled", True):
+                continue
+            if item.get("expires_at") and int(item["expires_at"]) <= now:
+                continue
+            return {"id": kid, **item}
+    return None
+
+
+def ensure_cli_key(store, *, created_by="") -> tuple[str, str, bool]:
+    """保证存在一枚 CLI 专用密钥，返回 (id, 明文, 是否新建)。
+
+    realm 固定 `cn`：国内版 CLI 只该打到国内账号，混用会让国际版账号被 400 拦下。
+    `max_ips` 不设限：本机 127.0.0.1 与局域网自测都可能出现，硬卡一个 IP
+    只会让「换台机器试一下」直接失败。
+    """
+    existing = find_cli_key(store)
+    if existing:
+        return existing["id"], str(existing.get("secret") or ""), False
+    kid, token = create_key(store, "CodeBuddy CLI", realm="cn",
+                            purpose=CLI_PURPOSE, created_by=created_by)
+    return kid, token, True
+
+
+def revoke_cli_keys(store) -> int:
+    """吊销所有 CLI 专用密钥；返回吊销数量。
+
+    与 `delete_key` 一样保留「不能删掉最后一枚密钥」的保护，否则会把
+    数据面锁死。
+    """
+    with store.lock:
+        ids = [kid for kid, item in store.data["keys"].items()
+               if norm_purpose(item.get("purpose")) == CLI_PURPOSE]
+        if not ids:
+            return 0
+        if len(store.data["keys"]) - len(ids) <= 0:
+            raise HTTPException(400, "CLI 密钥是当前唯一密钥，请先创建其它密钥再吊销")
+        for kid in ids:
+            store.data["keys"].pop(kid, None)
+            (store.data.get("api_key_ips") or {}).pop(kid, None)
+        store.save()
+    return len(ids)
+
+
+def rotate_cli_key(store, *, created_by="") -> tuple[str, str]:
+    """换一枚新的 CLI 密钥（旧的立即失效）。
+
+    先建新、再删旧：反过来的话「CLI 密钥是唯一一枚」时会被 delete 的保护拦住，
+    而轮换本身不会出现没有密钥的瞬间。
+    """
+    kid, token = create_key(store, "CodeBuddy CLI", realm="cn",
+                            purpose=CLI_PURPOSE, created_by=created_by)
+    with store.lock:
+        for old, item in list(store.data["keys"].items()):
+            if old == kid or norm_purpose(item.get("purpose")) != CLI_PURPOSE:
+                continue
+            store.data["keys"].pop(old, None)
+            (store.data.get("api_key_ips") or {}).pop(old, None)
         store.save()
     return kid, token
 

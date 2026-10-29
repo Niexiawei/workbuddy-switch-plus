@@ -2036,6 +2036,34 @@ def create_app(root=None, auth_dir=None, initial_key=None, admin_key=None, secur
                 "pool": _pool_view(store, reveal_secret=reveal)}
 
     # ── API 密钥（多密钥分发 + IP/模型白名单 + 额度）──────────────
+    @app.get("/admin/api/cli/key")
+    async def cli_key(req: Request):
+        """取回（必要时创建）CLI 专用密钥。
+
+        幂等：已有一枚可用的 CLI 密钥就原样返回，不会每次点「接入」都新发一枚。
+        """
+        actor = admin(req)
+        kid, token, created = keysvc.ensure_cli_key(store, created_by=actor["username"])
+        security.audit(actor, "create_key" if created else "read_key", "CodeBuddy CLI",
+                       f"id={kid}；来源 {client_ip(req)}")
+        return {"id": kid, "key": token, "created": created, "realm": "cn"}
+
+    @app.post("/admin/api/cli/key/rotate")
+    async def cli_key_rotate(req: Request):
+        actor = admin(req)
+        kid, token = keysvc.rotate_cli_key(store, created_by=actor["username"])
+        security.audit(actor, "rotate_key", "CodeBuddy CLI",
+                       f"id={kid}；来源 {client_ip(req)}")
+        return {"id": kid, "key": token, "created": True, "realm": "cn"}
+
+    @app.delete("/admin/api/cli/key")
+    async def cli_key_revoke(req: Request):
+        actor = admin(req)
+        count = keysvc.revoke_cli_keys(store)
+        security.audit(actor, "delete_key", "CodeBuddy CLI",
+                       f"吊销 {count} 枚；来源 {client_ip(req)}")
+        return {"ok": True, "revoked": count}
+
     @app.post("/admin/api/keys")
     async def add_key(req: Request):
         actor = admin(req)
