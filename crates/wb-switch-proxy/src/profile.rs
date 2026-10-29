@@ -1,6 +1,6 @@
 //! 客户端指纹：区分 CodeBuddy CLI 与桌面端，并合并出站请求头。
 //!
-//! 与 Python 版 \`core/client_profile.py\` 一一对应：UA 版本段随 CLI 升级变化，
+//! 与 Python 版 `core/client_profile.py` 一一对应：UA 版本段随 CLI 升级变化，
 //! 不能硬编码；鉴权与身份头始终以账号为准，客户端不能覆盖。
 
 use std::collections::BTreeMap;

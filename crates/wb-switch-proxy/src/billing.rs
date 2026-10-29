@@ -86,7 +86,7 @@ pub async fn credits(cfg: &ProxyConfig, token: &str) -> Result<Value, String> {
     }))
 }
 
-/// 每日签到。\`10001\` = 今天已经签过。
+/// 每日签到。`10001` = 今天已经签过。
 pub async fn checkin(cfg: &ProxyConfig, token: &str) -> Result<Value, String> {
     let body = post(cfg, "daily-checkin", token, json!({})).await?;
     let code = body.get("code").and_then(Value::as_i64).unwrap_or(-1);

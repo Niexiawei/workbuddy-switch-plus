@@ -534,7 +534,7 @@ pub fn preserve_by_default() -> bool {
     std::env::var("WB_PROXY_LOSSY_PROJECTION").map(|value| value != "1").unwrap_or(true)
 }
 
-/// 投影入口。返回 (新 body, 统计)。\`preserve\` 用于排障：完全不动。
+/// 投影入口。返回 (新 body, 统计)。`preserve` 用于排障：完全不动。
 pub fn project(body: &Value, preserve: bool) -> (Value, Value) {
     let messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
     let tools = body.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();

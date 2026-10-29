@@ -17,7 +17,7 @@ use crate::state::StateStore;
 pub struct KeyInfo {
     pub id: String,
     pub name: String,
-    /// \`cn\` / \`ai\`；None 表示不限制。
+    /// `cn` / `ai`；None 表示不限制。
     pub realm: Option<String>,
 }
 

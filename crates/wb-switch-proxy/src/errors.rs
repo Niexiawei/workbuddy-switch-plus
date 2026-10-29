@@ -1,7 +1,7 @@
 //! 上游失败分类：业务码 + HTTP 状态 → 客户端状态码与冷却维度。
 //!
 //! 只认码不认文案：同一句 msg 既可能是账号级也可能是请求级失败。
-//! 与 Python 版 \`core/upstream_errors.py\` 保持同一张表。
+//! 与 Python 版 `core/upstream_errors.py` 保持同一张表。
 
 use serde_json::{json, Value};
 

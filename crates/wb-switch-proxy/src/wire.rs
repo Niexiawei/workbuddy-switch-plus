@@ -1,7 +1,7 @@
 //! 请求体规范化：字段白名单 + developer→system + 身份过滤 + 11128 改写。
 //!
-//! 与 Python 版 \`converter.chat_completions\` 的前半段逐条对应；
-//! 用 \`tests/fixtures/proxy/dataplane/chat_*.json\` 做 golden 对齐。
+//! 与 Python 版 `converter.chat_completions` 的前半段逐条对应；
+//! 用 `tests/fixtures/proxy/dataplane/chat_*.json` 做 golden 对齐。
 
 use serde_json::{json, Map, Value};
 
