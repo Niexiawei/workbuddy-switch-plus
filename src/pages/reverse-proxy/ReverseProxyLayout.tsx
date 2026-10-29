@@ -20,7 +20,6 @@ import { Banner, CopyButton, PanelHeader, ToneBadge } from "@/components/reverse
 import { AddAccountDialog } from "@/components/reverse-proxy/add-account-dialog";
 import { BatchScanDialog } from "@/components/reverse-proxy/batch-scan-dialog";
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
-import { isDesktop } from "@/lib/api";
 import { setHostProvider, rp, type RpOverview, type RpToken, type RpUser } from "@/lib/reverse-proxy";
 import {
   portLine,
@@ -233,7 +232,8 @@ export default function ReverseProxyLayout() {
       </div>
 
       {/* 两个对话框由布局持有：账号池子页只触发，不各自维护一份 open 状态。 */}
-      {isDesktop() ? (
+      {/* 桌面端唯一形态：OAuth 扫码走主项目；下面两个对话框留给历史分支，不再选择。 */}
+      {true ? (
         <OAuthLoginDialog
           open={addOpen}
           onOpenChange={(open) => {

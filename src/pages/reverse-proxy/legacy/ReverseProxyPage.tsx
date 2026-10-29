@@ -14,7 +14,6 @@ import {
 } from "@/lib/reverse-proxy";
 import { saveLogin, savedLogin, serviceSupported, type RpSavedLogin } from "@/lib/reverse-proxy-service";
 // 引擎切换已退场（决策 4）：这一页只剩 Python「反代服务old」一条链路。
-import { isDesktop } from "@/lib/api";
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { performSignOut, shouldAutoLogin } from "@/lib/sign-out";
 import { AddAccountDialog } from "@/components/reverse-proxy/add-account-dialog";
@@ -207,13 +206,14 @@ export default function ReverseProxyPage() {
   }
 
   /**
-   * 桌面端与 webui 的「添加账号」是两条不同链路：
+   * 这一页只服务 Python 反代服务old，它的「添加账号」有两条链路：
    *
    *   · 桌面端：OAuth 扫码走主项目（core 的 oauth 模块，直接写 accounts.json），
    *     与账户管理页是同一个流程 —— 加完两个页面同时看得到，不需要反代再实现一遍。
-   *   · webui：浏览器里没有 Tauri 命令，只能用反代自己的 `/admin/api/oauth/*`。
+   *   · 备用：反代自己的 `/admin/api/oauth/*`（Python 侧实现，保留兜底）。
    */
-  const desktop = isDesktop();
+  // 只剩桌面端一个形态：OAuth 扫码走主项目，不再分支。
+  const desktop = true;
 
   const counts = useMemo<Record<string, number | undefined>>(() => ({
     accounts: overview?.accounts.length,

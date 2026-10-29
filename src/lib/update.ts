@@ -13,13 +13,8 @@ export const UPSTREAM_OWNER = "changexbc";
 export const UPSTREAM_REPO = "workbuddy-switch";
 export const UPSTREAM_REPOSITORY_URL = `https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPO}`;
 
-/** 在桌面端通过 Tauri opener 打开，在 webui 端打开新标签页。 */
+/** 用系统默认浏览器打开外链（桌面端唯一形态，走 Tauri opener）。 */
 export async function openExternalUrl(url: string): Promise<void> {
-  const isWebui = typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-  if (isWebui) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
-  }
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   await openUrl(url);
 }

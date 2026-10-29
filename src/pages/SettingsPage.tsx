@@ -1021,9 +1021,9 @@ function AutoRotateCard() {
     setBusy(true);
     try {
       const res = await api.runRotate();
-      // webui 没有事件通道：手动检查的推迟提示只能从返回值里取（桌面端由
+      // 手动检查的推迟提示只能从返回值里取（后台检查由
       // `rotate-deferred` 事件统一弹出，避免同一件事弹两次）。
-      if (api.isWebui() && res.notify?.body) {
+      if (res.notify?.body) {
         toast.warning("自动轮换已推迟", { description: res.notify.body, duration: 10_000 });
       }
       const text =
@@ -2325,11 +2325,11 @@ export default function SettingsPage() {
         {api.isDemoMode() ? null : <AutoCheckinCard />}
         <AutoRotateCard />
         <RateLimitCard />
-        {api.isDesktop() && !api.isDemoMode() ? <CompanionCard /> : null}
-        {api.isDesktop() || api.isDemoMode() ? <StartupCard /> : null}
+        {!api.isDemoMode() ? <CompanionCard /> : null}
+        <StartupCard />
         <NotificationHistoryCard />
         <ErrorLogCard />
-        {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard />}
+        {!api.isDemoMode() ? <UpdateCard /> : null}
       </div>
     </div>
   );

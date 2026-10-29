@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { rp, POOL_STATE_LABELS, ROUTING_LABELS, type RpAccount, type RpCheckinLog, type RpOverview } from "@/lib/reverse-proxy";
-import { isDesktop } from "@/lib/api";
 import { Banner, Empty, Field, PanelHeader, StatCard, ToneBadge, fmtNum, fmtTime } from "./rp-shared";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 import { AccountLimitsDialog } from "./account-limits-dialog";
@@ -198,7 +197,7 @@ export function AccountsPanel({ overview, reload, onAddAccount, onBatchScan }: {
   onBatchScan: () => void;
 }) {
   const { accounts, pool } = overview;
-  const desktop = isDesktop();
+  const desktop = true;
   // 上游最近一次读取失败的说明（空 = 没问题）。它决定「冷却状态未知」那一条
   // 要不要出现 —— 见 upstreamNote。取在这里而不是每行各取一次：整批共用一个值。
   const wb2apiError = pool.wb2api_error ?? "";

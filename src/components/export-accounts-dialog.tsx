@@ -51,19 +51,6 @@ async function exportDefaultPath(): Promise<string> {
   }
 }
 
-/** 前端 Blob 下载（webui 浏览器用）。 */
-function downloadJson(filename: string, data: unknown) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
 /** 桌面端在系统文件管理器中定位导出文件（Windows 为资源管理器）。 */
 async function revealInFinder(path: string): Promise<void> {
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
@@ -83,7 +70,7 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  /** 桌面端导出成功后的文件路径（webui 用浏览器下载，无此状态）。 */
+  /** 导出成功后的文件路径（用于「在文件管理器中显示」）。 */
   const [savedPath, setSavedPath] = useState<string | null>(null);
 
   useEffect(() => {
@@ -116,25 +103,18 @@ export function ExportAccountsDialog({ open, onOpenChange, accounts, onExported 
     setError("");
     try {
       const ids = [...selected];
-      if (api.isWebui()) {
-        // webui：浏览器 Blob 下载
-        const res = await api.exportAccounts(ids);
-        downloadJson(exportFileName(), res.accounts);
-        onExported?.(res.accounts.length);
-        onOpenChange(false);
-      } else {
-        // 桌面端：系统保存对话框选位置 → 后端写入该路径（WKWebView 不支持 `<a download>`）
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const path = await save({
-          title: "导出账号",
-          defaultPath: await exportDefaultPath(),
-          filters: [{ name: "JSON", extensions: ["json"] }],
-        });
-        if (!path) return; // 用户取消保存对话框
-        const res = await api.exportAccountsToPath(ids, path);
-        setSavedPath(res.path);
-        onExported?.(ids.length);
-      }
+      // 只剩桌面端：系统保存对话框选位置 → 后端写入该路径。
+      // 浏览器 Blob 下载那条路已随 wb-switch 一起移除（WKWebView 也不支持 `<a download>`）。
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        title: "导出账号",
+        defaultPath: await exportDefaultPath(),
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return; // 用户取消保存对话框
+      const res = await api.exportAccountsToPath(ids, path);
+      setSavedPath(res.path);
+      onExported?.(ids.length);
     } catch (e) {
       setError(api.asError(e));
     } finally {

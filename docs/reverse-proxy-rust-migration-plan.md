@@ -1,9 +1,12 @@
 # 反代服务内迁计划：Python 独立进程 → Rust / Tauri 单进程
 
-> 状态：方案稿（未改代码）
+> 状态：方案稿（未改代码）——**已被 `reverse-proxy-integration-plan.md`（v2）承接与部分取代**
 > 目标：把 `reverse-proxy/`（FastAPI，17,166 行，独立进程 + 独立 exe）整体迁进本项目，
 > 前端留在 `src/`，反代逻辑用 Rust；对外仍是 HTTP 数据面。桌面端是**唯一**反代宿主，SPA 同源直连，webui 改为通过 BFF 连本机桌面端（不再自带 Python 服务）。
-> 参考现状：`reverse-proxy/`、`src/lib/reverse-proxy*.ts`、`src-tauri/src/reverse_proxy.rs`、`crates/wb-switch-server`。
+> 参考现状：`reverse-proxy/`、`src/lib/reverse-proxy*.ts`、`src-tauri/src/reverse_proxy.rs`。
+>
+> **2026-10-29 更新**：`crates/wb-switch-server`（浏览器 webui）已整包移除，本文的
+> BFF 方案（D2）、P6「webui BFF」待办与 webui 相关验收全部作废；现行形态见 v2 计划。
 
 ---
 

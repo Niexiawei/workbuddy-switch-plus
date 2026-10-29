@@ -44,7 +44,6 @@ function start() {
     .catch(() => {
       // 拉取失败保持上一次快照：事件推送仍会覆盖它。
     });
-  if (api.isWebui()) return;
   void listen<UpdateSnapshot>("update-state", (event) => {
     if (event.payload) publish(event.payload);
   }).then((fn) => {

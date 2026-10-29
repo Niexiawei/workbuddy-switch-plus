@@ -1,13 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { isDesktop } from "@/lib/api";
 import { DEFAULT_BASE, getBaseUrl, setBaseUrl } from "@/lib/reverse-proxy";
 
 /**
  * 反代服务的进程管控（仅桌面端可用）。
  *
  * 反代服务是独立可执行文件，桌面端负责把它拉起来/停掉——用户不该为了进管理页
- * 先去开一个终端敲 `python serve.py`。浏览器（webui）形态下没有进程可管，
+ * 先去开一个终端敲 `python serve.py`。只服务「反代服务old」，内置服务见 `proxy-service.ts`；
  * `serviceSupported()` 返回 false，界面据此隐藏这些控件。
  */
 
@@ -33,7 +32,8 @@ export type RpServiceStatus = {
 };
 
 export function serviceSupported(): boolean {
-  return isDesktop();
+  // 只剩桌面端一个形态：Python old 启动器在桌面端总是可用。
+  return true;
 }
 
 export function serviceStatus(): Promise<RpServiceStatus> {

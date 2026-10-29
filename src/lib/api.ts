@@ -59,7 +59,7 @@ import { screenshotDemoResponse } from "./screenshot-demo";
 /**
  * 双通道适配层：
  * - 桌面 App（Tauri）：`invoke` 调用 Rust commands
- * - webui（浏览器）：HTTP fetch 调用同源服务（服务端口 / SSH 转发端口均可）
+ * - （历史上还有 webui 形态的 HTTP 分支，已随 wb-switch 移除）
  */
 
 const DEMO_READ_COMMANDS = new Set([
@@ -76,183 +76,29 @@ export function isDemoMode(): boolean {
   return demoModeEnabled;
 }
 
-export function isWebui(): boolean {
-  return typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window);
-}
-
-/** Tauri mobile 也注入内部 API；用现有平台 UA 约定把桌面宿主与移动宿主区分开。 */
-function isMobilePlatform(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  return (
-    /Android|iPhone|iPad|iPod/i.test(ua) ||
-    (ua.includes("Macintosh") && navigator.maxTouchPoints > 1)
-  );
-}
-
-/** 是否为提供桌面专属能力的 Tauri 宿主。 */
-export function isDesktop(): boolean {
-  return !isWebui() && !isMobilePlatform();
-}
-
-/** Agent Companion 只由桌面宿主管理，不能经 WebUI 或演示模式访问。 */
-function requireCompanionDesktop(): void {
-  if (demoModeEnabled) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
-  if (!isDesktop()) throw new Error("Agent Companion 仅在桌面版中可用");
-}
-
-type Route = { method: "GET" | "POST" | "DELETE"; path: string };
-
-/** Tauri command → HTTP 路由映射（webui 模式）。 */
-const ROUTES: Record<string, Route> = {
-  get_status: { method: "GET", path: "/api/status" },
-  get_accounts: { method: "GET", path: "/api/accounts" },
-  get_codebuddy_cli_status: { method: "GET", path: "/api/codebuddy-cli/status" },
-  install_codebuddy_cli_helper: { method: "POST", path: "/api/codebuddy-cli/install-helper" },
-  switch_codebuddy_cli_account: { method: "POST", path: "/api/codebuddy-cli/switch" },
-  enable_codebuddy_cli_proxy: { method: "POST", path: "/api/codebuddy-cli/proxy" },
-  disable_codebuddy_cli_proxy: { method: "DELETE", path: "/api/codebuddy-cli/proxy" },
-  get_codebuddy_cn_ide_status: { method: "GET", path: "/api/codebuddy-cn-ide/status" },
-  switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
-  detect_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/detect" },
-  list_codebuddy_ide_sessions: { method: "GET", path: "/api/codebuddy-cn-ide/sessions" },
-  codebuddy_ide_session_links_preview: {
-    method: "POST",
-    path: "/api/codebuddy-cn-ide/session-links",
-  },
-  get_vscode_ext_status: { method: "GET", path: "/api/vscode-ext/status" },
-  get_jetbrains_status: { method: "GET", path: "/api/jetbrains/status" },
-  switch_jetbrains_account: { method: "POST", path: "/api/jetbrains/switch" },
-  detect_jetbrains_account: { method: "POST", path: "/api/jetbrains/detect" },
-  list_vscode_sessions: { method: "GET", path: "/api/vscode-ext/sessions" },
-  switch_vscode_ext_account: { method: "POST", path: "/api/vscode-ext/switch" },
-  vscode_session_links_preview: { method: "POST", path: "/api/vscode-ext/session-links" },
-  detect_vscode_ext_account: { method: "POST", path: "/api/vscode-ext/detect" },
-  get_codebuddy_ide_status: { method: "GET", path: "/api/codebuddy-ide/status" },
-  switch_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/switch" },
-  detect_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/detect" },
-  list_codebuddy_intl_ide_sessions: { method: "GET", path: "/api/codebuddy-ide/sessions" },
-  codebuddy_intl_ide_session_links_preview: {
-    method: "POST",
-    path: "/api/codebuddy-ide/session-links",
-  },
-  delete_account: { method: "POST", path: "/api/delete" },
-  update_account_display: { method: "POST", path: "/api/update-account-display" },
-  oauth_start: { method: "POST", path: "/api/oauth/start" },
-  oauth_status: { method: "POST", path: "/api/oauth/status" },
-  import_local: { method: "POST", path: "/api/import-local" },
-  export_accounts: { method: "POST", path: "/api/export-accounts" },
-  export_accounts_to_path: { method: "POST", path: "/api/export-accounts-to-path" },
-  preview_import_accounts: { method: "POST", path: "/api/import/preview" },
-  import_accounts: { method: "POST", path: "/api/import" },
-  switch_account: { method: "POST", path: "/api/switch" },
-  list_sessions: { method: "GET", path: "/api/sessions" },
-  list_account_sessions: { method: "GET", path: "/api/sessions/account" },
-  copy_sessions: { method: "POST", path: "/api/sessions/copy" },
-  copy_sessions_cross: { method: "POST", path: "/api/sessions/copy-cross" },
-  session_links_preview: { method: "POST", path: "/api/session-links/preview" },
-  session_links_preview_cross: { method: "POST", path: "/api/session-links/preview-cross" },
-  session_sync_cross: { method: "POST", path: "/api/session-sync/cross" },
-  list_session_groups: { method: "POST", path: "/api/session-groups/list" },
-  get_session_group: { method: "POST", path: "/api/session-groups/detail" },
-  preview_session_group_pair: { method: "POST", path: "/api/session-groups/preview" },
-  sync_session_group_pair: { method: "POST", path: "/api/session-groups/sync" },
-  sync_session_group_unify: { method: "POST", path: "/api/session-groups/unify" },
-  sync_session_group_safe_batch: { method: "POST", path: "/api/session-groups/sync-safe" },
-  add_session_group_member: { method: "POST", path: "/api/session-groups/add" },
-  copy_linked_sessions: { method: "POST", path: "/api/session-groups/copy-linked" },
-  vscode_restart_precheck: { method: "POST", path: "/api/vscode-ext/restart-precheck" },
-  unlink_session_group_member: { method: "POST", path: "/api/session-groups/unlink" },
-  delete_session_group: { method: "POST", path: "/api/session-groups/delete" },
-  get_checkin_status: { method: "GET", path: "/api/checkin/status" },
-  get_credit_expiry: { method: "POST", path: "/api/credits" },
-  get_credit_statistics: { method: "GET", path: "/api/credits/stats" },
-  get_token_statistics: { method: "GET", path: "/api/token-stats" },
-  get_rate_limits: { method: "GET", path: "/api/rate-limits" },
-  get_rate_limit_hook_status: { method: "GET", path: "/api/rate-limits/hook-status" },
-  install_rate_limit_hook: { method: "POST", path: "/api/rate-limits/install-hook" },
-  uninstall_rate_limit_hook: { method: "POST", path: "/api/rate-limits/uninstall-hook" },
-  get_rate_limit_config: { method: "GET", path: "/api/rate-limits/config" },
-  save_rate_limit_config: { method: "POST", path: "/api/rate-limits/config" },
-  checkin: { method: "POST", path: "/api/checkin" },
-  checkin_all: { method: "POST", path: "/api/checkin/all" },
-  get_auto_checkin_config: { method: "GET", path: "/api/checkin/config" },
-  save_auto_checkin_config: { method: "POST", path: "/api/checkin/config" },
-  get_checkin_logs: { method: "GET", path: "/api/checkin/logs" },
-  list_notifications: { method: "GET", path: "/api/notifications" },
-  record_notification: { method: "POST", path: "/api/notifications/record" },
-  clear_notifications: { method: "POST", path: "/api/notifications/clear" },
-  get_travel_status: { method: "GET", path: "/api/travel/status" },
-  get_auto_travel_config: { method: "GET", path: "/api/travel/config" },
-  save_auto_travel_config: { method: "POST", path: "/api/travel/config" },
-  get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
-  save_auto_rotate_config: { method: "POST", path: "/api/rotate/config" },
-  rotate_status: { method: "GET", path: "/api/rotate/status" },
-  run_rotate: { method: "POST", path: "/api/rotate/run" },
-  get_rotate_logs: { method: "GET", path: "/api/rotate/logs" },
-  refresh_account_token: { method: "POST", path: "/api/refresh-token" },
-  get_github_config: { method: "GET", path: "/api/update/config" },
-  save_github_config: { method: "POST", path: "/api/update/config" },
-  check_update: { method: "GET", path: "/api/update/check" },
-  switch_progress: { method: "GET", path: "/api/switch/progress" },
-};
+/**
+ * 宿主形态只有一个：Tauri 桌面端。
+ *
+ * 历史上这里有 `isWebui()` / `isMobilePlatform()` / `isDesktop()` 三套判定，
+ * 服务于「浏览器 + 桌面 + 移动」三种运行形态。随着 `wb-switch`（浏览器形态）
+ * 整包移除、移动端不做，三者都退化成常量，继续留着只会让人以为还有分支可走。
+ *
+ * 见 docs/reverse-proxy-integration-plan.md §3.6 / 决策 7。
+ */
 
 /**
  * 档位参数只在国际版时下发：缺省（国内版）保持改造前的请求体逐字一致，
- * Tauri 走 `invoke(cmd, undefined)`，HTTP 走无 query 的路径。
+ * 与后端 ariant 字段（cn / i）同口径。
  */
 function variantArgs(variant?: WbVariant): Record<string, unknown> | undefined {
   return variant === "ai" ? { variant } : undefined;
 }
 
-function queryString(args?: Record<string, unknown>): string {
-  if (!args) return "";
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(args)) {
-    if (value === undefined || value === null) continue;
-    params.set(key, String(value));
-  }
-  const text = params.toString();
-  return text ? `?${text}` : "";
+/** Agent Companion 只由桌面宿主管理，演示模式下不可用。 */
+function requireCompanionDesktop(): void {
+  if (demoModeEnabled) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
 }
 
-/** 页面当前来源，仅用于错误提示；缺失时返回空串，调用方据此省略括号。 */
-function currentOrigin(): string {
-  if (typeof window === "undefined") return "";
-  const origin = window.location?.origin;
-  return typeof origin === "string" ? origin : "";
-}
-
-async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const route = ROUTES[cmd];
-  if (!route) throw new Error(`webui 模式暂不支持该操作: ${cmd}`);
-  let res: Response;
-  try {
-    // 相对路径以页面自身来源为基准（服务端口 / SSH 转发端口 / localhost 与
-    // 127.0.0.1 混用都自动跟随），不能写死 127.0.0.1:57890。
-    const url =
-      route.method === "GET"
-        ? `${route.path}${queryString(args)}`
-        : route.path;
-    res = await fetch(url, {
-      method: route.method,
-      headers: { "Content-Type": "application/json" },
-      body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
-    });
-  } catch {
-    const origin = currentOrigin();
-    throw new Error(
-      origin
-        ? `无法连接 workbuddy-switch 服务（${origin}），请先运行 \`workbuddy-switch\``
-        : `无法连接 workbuddy-switch 服务，请先运行 \`workbuddy-switch\``,
-    );
-  }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.message || data.error || `请求失败 (${res.status})`);
-  }
-  return data as T;
-}
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (demoModeEnabled) {
@@ -262,8 +108,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
     return screenshotDemoResponse(cmd, args) as T;
   }
-  if (!isWebui()) return invoke<T>(cmd, args);
-  return httpCall<T>(cmd, args);
+  return invoke<T>(cmd, args);
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +416,7 @@ export function switchAccount(args: {
   return call("switch_account", args as unknown as Record<string, unknown>);
 }
 
-/** 切换进度（webui 轮询用；桌面端走事件，此函数无副作用）。 */
+/** 切换进度轮询（保留给非事件场景；正常情况下进度走 `switch-progress` 事件）。 */
 export function switchProgress(): Promise<{ running: boolean; progress: string | null }> {
   return call("switch_progress");
 }
@@ -769,16 +614,15 @@ export function deleteSessionGroup(args: {
   return call("delete_session_group", args as unknown as Record<string, unknown>);
 }
 
-/** 打开系统设置授权面板（桌面端专用；webui 模式由服务进程权限决定，无操作）。 */
+/** 打开系统设置授权面板。 */
 export function openPermissionSettings(
   target?: "app_management" | "all_files",
 ): Promise<void> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (isWebui()) return Promise.resolve();
   return call("open_permission_settings", { target: target ?? "app_management" });
 }
 
-/** 权限自检：桌面端写探针（按档位写在对应登录态文件旁）；webui 模式由服务进程权限决定。 */
+/** 权限自检：写探针（按档位写在对应登录态文件旁）。 */
 export function checkAuthPermission(variant?: WbVariant): Promise<{
   ok: boolean;
   message?: string;
@@ -787,20 +631,12 @@ export function checkAuthPermission(variant?: WbVariant): Promise<{
   hint?: string;
 }> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (isWebui()) {
-    return Promise.resolve({
-      ok: true,
-      message: "webui 模式由服务进程（终端启动）的权限决定，无需额外授权",
-      hint: "",
-    });
-  }
   return call("check_auth_permission", variantArgs(variant));
 }
 
-/** 在 Finder 中显示当前 App（桌面端专用；webui 无操作）。 */
+/** 在 Finder 中显示当前 App。 */
 export function revealAppInFinder(): Promise<void> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (isWebui()) return Promise.resolve();
   return call("reveal_app_in_finder");
 }
 
@@ -940,16 +776,6 @@ export async function getTravelStatus(accountId: string): Promise<TravelStatus> 
   if (demoModeEnabled) {
     return screenshotDemoResponse("get_travel_status", { accountId }) as TravelStatus;
   }
-  if (isWebui()) {
-    // webui 端为批量接口，按 accountId 过滤
-    const all = await httpCall<{
-      accounts: { accountId: string; email: string; label: TravelStatus["label"]; rewardCredit: number | null; locationName?: string | null; arriveAt?: number | null }[];
-    }>("get_travel_status");
-    const one = all.accounts.find((a) => a.accountId === accountId);
-    return one
-      ? { label: one.label, rewardCredit: one.rewardCredit, locationName: one.locationName ?? null, arriveAt: one.arriveAt ?? null }
-      : { label: "untraveled", rewardCredit: null, locationName: null, arriveAt: null };
-  }
   return call("get_travel_status", { accountId });
 }
 
@@ -1029,12 +855,13 @@ export function relaunchApp(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** 浏览器 / 演示模式没有更新服务：与弹窗既有文案逐字一致。 */
-const UPDATE_UNSUPPORTED_MESSAGE = "浏览器 webui 模式不能直接安装桌面更新包";
+const UPDATE_UNSUPPORTED_MESSAGE = "当前运行形态不能直接安装桌面更新包";
+export { UPDATE_UNSUPPORTED_MESSAGE };
 
 /**
  * 更新状态快照（前端首屏初始化；之后由 `update-state` 事件推送）。
  *
- * webui 没有更新服务、演示模式禁止真实下载，两者都回落到静态快照：
+ * 演示模式禁止真实下载，回落成静态快照：
  * 演示模式给「有新版」态，保证演示页 / 截图里的升级入口与外链完整。
  */
 export function updateState(): Promise<UpdateSnapshot> {
@@ -1049,47 +876,34 @@ export function updateState(): Promise<UpdateSnapshot> {
       checkedAt: null,
     });
   }
-  if (isWebui()) {
-    return Promise.resolve({
-      phase: "idle",
-      latest: null,
-      percent: null,
-      message: null,
-      checkedAt: null,
-    });
-  }
   return call("update_state");
 }
 
 /** 启动更新包下载（异步，立即返回；进度走 `update-state` 事件与托盘）。 */
 export function updateDownload(): Promise<void> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (isWebui()) return Promise.reject(new Error(UPDATE_UNSUPPORTED_MESSAGE));
   return call<unknown>("update_download").then(() => undefined);
 }
 
 /** 安装已下载的更新包并重启（用户点「重启以完成升级」时调用）。 */
 export function updateRestart(): Promise<void> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (isWebui()) return Promise.reject(new Error(UPDATE_UNSUPPORTED_MESSAGE));
   return call<unknown>("update_restart").then(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
-// 开机自启（仅桌面端；webui 不提供同名接口，卡片也不在 webui 渲染）
+// 开机自启
 // ---------------------------------------------------------------------------
 
 /** 查询系统当前的开机自启注册状态（桌面端）。 */
 export function getLaunchAtLoginEnabled(): Promise<boolean> {
   if (demoModeEnabled) return call("get_launch_at_login_enabled");
-  if (!isDesktop()) return Promise.resolve(false);
   return call("get_launch_at_login_enabled");
 }
 
 /** 注册 / 移除系统开机自启，返回回读后的权威状态（桌面端）。 */
 export function setLaunchAtLoginEnabled(enabled: boolean): Promise<boolean> {
   if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
-  if (!isDesktop()) return Promise.resolve(false);
   return call("set_launch_at_login_enabled", { enabled });
 }
 
@@ -1133,10 +947,10 @@ export function clearNotifications(): Promise<{ cleared: boolean }> {
 /**
  * 上报一条错误到本地错误日志（桌面端落盘 `~/.wb-switch-plus/error.log`）。
  *
- * webui / 演示模式没有落盘通道：静默忽略（调用方的本地提示不受影响）。
+ * 演示模式没有落盘通道：静默忽略（调用方的本地提示不受影响）。
  */
 export function logError(kind: ErrorLogKind, message: string, detail?: string): Promise<void> {
-  if (demoModeEnabled || isWebui()) return Promise.resolve();
+  if (demoModeEnabled) return Promise.resolve();
   return call<unknown>("log_error", { kind, message, detail: detail ?? null }).then(
     () => undefined,
   );
@@ -1146,13 +960,12 @@ export function logError(kind: ErrorLogKind, message: string, detail?: string): 
 export function getErrorLogPath(): Promise<string> {
   // 演示模式给一条与其它演示路径同风格的值，保证演示页 / 截图里界面完整。
   if (demoModeEnabled) return Promise.resolve("/demo/.wb-switch/error.log");
-  // webui 没有落盘通道（不写服务端日志），设置页不展示路径。
-  if (isWebui()) return Promise.resolve("");
+  // 只做演示模式的短路；桌面端一律有落盘通道。
   return call<string>("get_error_log_path");
 }
 
 /** 在文件管理器中定位错误日志（桌面端；日志尚未生成时由后端打开所在目录）。 */
 export function revealErrorLog(): Promise<void> {
-  if (demoModeEnabled || isWebui()) return Promise.resolve();
+  if (demoModeEnabled) return Promise.resolve();
   return call<unknown>("reveal_error_log").then(() => undefined);
 }

@@ -505,7 +505,7 @@ export default function AccountsPage() {
    * 「这个号参不参与调度」的属性。这里拉一份池快照，给卡片的池徽标与
    * 「加入 / 移出反代池」菜单项用；写操作也走反代管理面，和反代页的暂停/恢复同源。
    *
-   * 拉不到（反代没启动、没登录、webui 连不上）时整块按「未知」处理 —— 不渲染徽标、
+   * 拉不到（反代没启动、未授权）时整块按「未知」处理 —— 不渲染徽标、
    * 不渲染菜单项，而不是把「查不到」画成「正常」。
    */
   const [poolMap, setPoolMap] = useState<Record<string, RpAccount>>({});
@@ -552,7 +552,6 @@ export default function AccountsPage() {
   // 后端入账 hook 事件（CLI / WorkBuddy 的 429 当轮）后推送 → 立即拉取，秒级更新。
   // 这一路不看节流：新状态已经在后端，前端只做拉取。
   useEffect(() => {
-    if (api.isWebui()) return;
     let unlisten: (() => void) | undefined;
     void listen("rate-limits-updated", () => {
       void loadRateLimitsRef.current({ force: true });
@@ -569,7 +568,6 @@ export default function AccountsPage() {
    * 判出来的「认证已脱节」会一直留在页面上，用户点什么都要等下次重挂载。
    */
   useEffect(() => {
-    if (api.isWebui()) return;
     let unlisten: (() => void) | undefined;
     void listen("codebuddy-cli-updated", () => {
       void refreshCodebuddyCliStatusRef.current();

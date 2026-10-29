@@ -204,39 +204,9 @@ jobs:
           npm install
           npm run build:desktop
 
-      # CLI 二进制
-      - name: Build server binary
-        shell: bash
-        run: |
-          cargo build -p wb-switch-server --release --target ${{ matrix.target }}
-          mkdir -p dist-bin
-
-      # 打包本平台包并发布到 npm（CLI 二进制走 npm registry，Release 只留桌面 App）
-      # 二改版默认**关闭**：npm 上那批 workbuddy-switch-* 包是上游的作用域，要发必须先在
-      # 仓库 Settings → Variables 里显式设 PUBLISH_NPM=true，并配好自己的 NPM_TOKEN
-      # secret（以及把 5 个平台包改名到你自己的作用域）。没配就整体跳过，
-      # Release 的桌面 App 照样出。
-      - name: Publish platform package
-        if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_NPM == 'true'
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          PKG_DIR="npm/platform/workbuddy-switch-${{ matrix.platform_tag }}"
-          # 用 tag 版本同步 platform 包版本（git 里的可能滞后）
-          VER="${GITHUB_REF_NAME#v}"
-          perl -pi -e "s/\"version\": \"[0-9.]+\"/\"version\": \"$VER\"/" "$PKG_DIR/package.json"
-          mkdir -p "$PKG_DIR/bin"
-          SRC="target/${{ matrix.target }}/release/wb-switch"
-          [ -f "$SRC.exe" ] && SRC="$SRC.exe"
-          cp "$SRC" "$PKG_DIR/bin/${{ matrix.cli_bin }}"
-          cd "$PKG_DIR"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > .npmrc
-          npm publish --access public --registry=https://registry.npmjs.org
-
       # 桌面 App（mac app / nsis exe / deb + AppImage）
-      # 仓库变量 PUBLISH_APP=false 时整段跳过：纯 npm/CLI 改动可只发 npm 不发桌面 App；
-      # 恢复为 true 后重跑本工作流即可幂等补发（与 PUBLISH_NPM 对称）。
+      # 仓库变量 PUBLISH_APP=false 时整段跳过：只发前端改动时可不开桌面 App，
+      # 恢复为 true 后重跑本工作流即可幂等补发。
       - name: Build desktop app
         if: vars.PUBLISH_APP != 'false'
         shell: bash
@@ -358,26 +328,6 @@ jobs:
           name: ${{ matrix.name }}
           path: dist-bin/
           if-no-files-found: error
-
-  # 所有平台包发布成功后，发布主包（optionalDependencies 引用平台包）。
-  # 与上面同一条开关：默认关闭，PUBLISH_NPM=true 才发。
-  publish-main:
-    name: Publish npm main package
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_NPM == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Publish main package
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          cd npm
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > .npmrc
-          npm publish --access public --registry=https://registry.npmjs.org
 
   release:
     name: Publish release assets

@@ -47,15 +47,17 @@ pip install -r requirements.txt pyinstaller && python build-exe.py   # → dist/
 `crates/wb-switch-core` 是不依赖 Tauri 的核心库（账号库、认证文件、OAuth、进程探测、切换、会话、签到、轮换、更新、配置等，全部在 `src/modules/` 下）。它被两个宿主复用：
 
 - `src-tauri/`：桌面端。`commands.rs` 与 `lib.rs` 里的 `#[tauri::command]` 只是**薄包装**，业务逻辑一律下沉到 core；`#[cfg]` 分支承载 Windows / macOS / Linux 差异（Windows 走 Win32 直调与注册表，macOS 走文件权限 / TCC 引导，Linux 走 zbus D-Bus Secret Service）。
-- `crates/wb-switch-server`：HTTP server + CLI（bin 名 `wb-switch`），用 axum 把同一套 core 暴露为 `/api/*`，并用 `rust-embed` 内嵌 `../../dist/` 提供 webui。
+- `crates/wb-switch-proxy`：内置反代。桌面端启动时由 `src-tauri/src/proxy_service.rs` 拉起进程内 axum 监听（`127.0.0.1:8787` 起，冲突自动 +1），管理面凭宿主令牌鉴权。
 
-新增一个功能时，逻辑写进 core，再分别在 `commands.rs`（invoke）与 `api.rs`（路由）各加一层薄适配。两个宿主的命令/路由要成对补齐，只加一边会让 webui 或桌面端缺功能。
+新增一个功能时，逻辑写进 core，再在 `commands.rs` 加一层薄适配。反代侧的管理面新增在 `crates/wb-switch-proxy/src/admin.rs`。
 
-### 前端双通道
+> 历史上有第三个宿主 `crates/wb-switch-server`（浏览器 webui，npm 安装形态），已随浏览器形态一起移除——现在只有 Tauri 桌面端一个宿主。
 
-`src/lib/api.ts` 是唯一的后端适配层：检测到 `__TAURI_INTERNALS__` 走 `invoke`，否则走同源 `fetch`。页面/组件不直接调用 `invoke` 或 `fetch`，新增接口在 `api.ts` 里加一个函数即可同时支持桌面端与 webui。例外是反代管理面：`src/lib/reverse-proxy.ts` 直接 `fetch` 反代服务自己的 `/admin/api/*`，`src/lib/reverse-proxy-service.ts` 直接 `invoke` 反代启动器命令。`src/lib/types.ts` 定义与 Rust 侧对应的类型，`src/stores/accounts.ts`（zustand）持有跨页面复用的账号、档位与各客户端状态。
+### 前端单通道
 
-页面在 `src/pages/`（账号 / 会话 / 积分统计 / Token 统计 / 反代 / 设置），路由定义在 `src/App.tsx`。
+`src/lib/api.ts` 是后端适配层，只走 `invoke`。页面/组件不直接调用 `invoke`，新增接口在 `api.ts` 里加一个函数。例外是反代管理面：`src/lib/reverse-proxy.ts` 直接 `fetch` 内置反代的 `/admin/api/*`（地址与宿主令牌由 `proxy_service_status` / `proxy_admin_token` 注入，见 `setHostProvider`），`src/lib/reverse-proxy-service.ts` 直接 `invoke` Python old 的启动器命令。`src/lib/types.ts` 定义与 Rust 侧对应的类型，`src/stores/accounts.ts`（zustand）持有跨页面复用的账号、档位与各客户端状态。
+
+页面在 `src/pages/`（账号 / 会话 / 积分统计 / Token 统计 / 反代 / 设置；反代是 `src/pages/reverse-proxy/` 下的路由组），路由定义在 `src/App.tsx`。
 
 ### 国内版 / 国际版档位
 

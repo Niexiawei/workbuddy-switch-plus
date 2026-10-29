@@ -22,10 +22,10 @@ const DEDUPE_MAX_ENTRIES = 50;
 
 /**
  * 桌面端才会把错误写入 `~/.wb-switch-plus/error.log`。
- * webui / 演示模式没有落盘通道。
+ * 演示模式没有落盘通道。
  */
 export function canPersistErrorLog(): boolean {
-  return !api.isDemoMode() && !api.isWebui();
+  return !api.isDemoMode();
 }
 
 const lastReportedAt = new Map<string, number>();
@@ -73,7 +73,7 @@ function stackOf(value: unknown): string {
  * - 去重键是 `kind | source | message`：同一处相同错误 30 秒内只处理一次。
  * - 不吞错：浏览器对未捕获错误的默认控制台输出保持原样，这里额外打一行带来源的摘要，
  *   便于在 webview 控制台里定位。
- * - 落盘失败 / webui 无通道都静默忽略，上报本身绝不影响主流程。
+ * - 落盘失败静默忽略，上报本身绝不影响主流程。
  */
 export function reportError(
   kind: ErrorLogKind,

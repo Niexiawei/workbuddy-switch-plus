@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { disableCodebuddyCliProxy, enableCodebuddyCliProxy } from "./api";
 import { normalizeProxyBase } from "./cli-link";
 import { rp, setHostProvider } from "./reverse-proxy";
 
@@ -68,28 +67,9 @@ describe("normalizeProxyBase", () => {
   });
 });
 
-describe("开启/关闭反代模式的 webui 路由", () => {
-  it("开启用 POST /api/codebuddy-cli/proxy 并带 baseUrl + token", async () => {
-    const fetchMock = stubFetch();
-    await enableCodebuddyCliProxy("http://127.0.0.1:8787/v1", "sk-cli");
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("/api/codebuddy-cli/proxy");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
-      baseUrl: "http://127.0.0.1:8787/v1",
-      token: "sk-cli",
-    });
-  });
-
-  it("关闭用 DELETE 同一路径且不带 body", async () => {
-    const fetchMock = stubFetch();
-    await disableCodebuddyCliProxy();
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("/api/codebuddy-cli/proxy");
-    expect(init.method).toBe("DELETE");
-    expect(init.body).toBeUndefined();
-  });
-});
+// 原「开启/关闭反代模式的 webui 路由」两条已删除：它们测的是浏览器形态下打
+// `/api/codebuddy-cli/proxy` 的 HTTP 路径，而该形态（wb-switch + httpCall + ROUTES）
+// 已随 I6 整包移除。桌面端走 `invoke("enable_codebuddy_cli_proxy")`，由 Rust 侧覆盖。
 
 describe("CLI 专用密钥的管理端契约", () => {
   it("cliKey() 是 GET /admin/api/cli/key", async () => {

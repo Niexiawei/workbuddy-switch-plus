@@ -175,7 +175,7 @@ function UpdateCenter({ running }: { running: boolean | undefined }) {
   const version = useAccountsStore((s) => s.status?.version);
   const snapshot = useUpdateState();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const showCompanion = api.isDesktop() && !demoModeEnabled;
+  const showCompanion = !demoModeEnabled;
   // 演示模式只提供只读演示浮层，不渲染正式版的悬浮窗开关。
   const showCompanionDemo = demoModeEnabled;
 
@@ -243,7 +243,7 @@ function UpdateCenter({ running }: { running: boolean | undefined }) {
 function Layout() {
   const running = useAccountsStore((s) => s.status?.running);
   const hasUnifiedTitleBar =
-    api.isDesktop() && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
+    typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
   const sessionsNavEnabled = useSessionsNavEnabled();
   const legacyProxyNavEnabled = useLegacyProxyNavEnabled();
   useCreditAutoRefresh();
@@ -293,7 +293,7 @@ function Layout() {
           {legacyProxyNavEnabled && <SidebarNavItem to="/reverse-proxy-old" icon={History} label="反代服务old" />}
           <SidebarNavItem to="/settings" icon={Settings} label="设置" />
         </nav>
-        {api.isWebui() && !demoModeEnabled ? null : <UpdateCenter running={running} />}
+        {!demoModeEnabled ? <UpdateCenter running={running} /> : null}
       </aside>
       <main
         className={cn(

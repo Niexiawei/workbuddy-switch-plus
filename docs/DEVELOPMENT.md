@@ -115,22 +115,22 @@ macOS / Linux 的安装包里**没有**反代服务：`reverse_proxy.rs` 已按�
 
 ### npm 版（webui）发布
 
-1. 编译 server 二进制并上传 GitHub Release（`.github/workflows/build.yml` 自动执行）
-2. `cd npm && npm publish`（包名 `workbuddy-switch`，postinstall 按平台从 Release 下载二进制）
+> 已移除：浏览器 webui 形态随 `crates/wb-switch-server` 一起删除，npm 包与平台二进制不再发布。
+> 现在只发桌面 App（Release 资产 + updater）。
 
 ## 目录结构
 
 ```
 src-tauri/
   src/
-    commands.rs      # Tauri command 薄包装（对应 Python 版 HTTP API）
-    modules/         # 已抽离到 crates/wb-switch-core（三宿主复用）
+    commands.rs      # Tauri command 薄包装
+    proxy_service.rs # 内置反代的生命周期（autostart / 停机 / 宿主令牌）
+    modules/         # 已抽离到 crates/wb-switch-core
 crates/
   wb-switch-core/    # 核心逻辑：account/auth_file/oauth/process/switch/session/checkin/refresh/update/config
-  wb-switch-server/  # HTTP server + CLI：axum API + rust-embed 前端
-src/                 # 前端：components/pages/lib（api.ts 双通道：Tauri invoke / HTTP fetch）
-npm/                 # npm 包：package.json + bin + scripts/install.js
-reverse-proxy/       # 独立反代服务（Python/FastAPI），桌面端托管；dist/wb-reverse-proxy.exe 随安装包分发
+  wb-switch-proxy/   # 内置反代：axum 数据面 + 管理面（由桌面端进程内启动）
+src/                 # 前端：components/pages/lib（api.ts 只走 Tauri invoke；反代管理面见 reverse-proxy.ts）
+reverse-proxy/       # Python 反代（反代服务old，回滚通道）；dist/wb-reverse-proxy.exe 随安装包分发
 scripts/             # 构建与发布辅助脚本（含 verify-release-binary.mjs 产物自检）
 ```
 
