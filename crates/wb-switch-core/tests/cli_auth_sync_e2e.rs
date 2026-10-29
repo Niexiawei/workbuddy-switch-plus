@@ -29,7 +29,7 @@ impl Sandbox {
     fn new(tag: &str) -> Self {
         let root = std::env::temp_dir().join(format!("wb-switch-e2e-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for dir in [".wb-switch", ".codebuddy", ".codebuddy-rotate"] {
+        for dir in [".wb-switch-plus", ".codebuddy", ".codebuddy-rotate"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         Self { root }
@@ -49,7 +49,7 @@ impl Sandbox {
 
     /// 把账号库的 mtime 设为距今 `seconds_ago` 秒。
     fn age_accounts(&self, seconds_ago: u64) {
-        let path = self.root.join(".wb-switch/accounts.json");
+        let path = self.root.join(".wb-switch-plus/accounts.json");
         let target = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds_ago);
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_modified(target).unwrap();
@@ -118,7 +118,7 @@ const STATE_POINTS_TO_A: &str = r#"{"active": 0, "activeAccountId": "acct-a"}"#;
 #[cfg(windows)]
 fn freshly_refreshed_store_reports_sync_in_progress_not_pending() {
     let sandbox = Sandbox::new("fresh");
-    sandbox.write(".wb-switch/accounts.json", ACCOUNTS_A_AND_B);
+    sandbox.write(".wb-switch-plus/accounts.json", ACCOUNTS_A_AND_B);
     sandbox.write(".codebuddy-rotate/state.json", STATE_POINTS_TO_A);
     // settings 里放一个账号库中不存在的旧 token —— 复现保活刷新的中间态。
     sandbox.write(
@@ -145,7 +145,7 @@ fn freshly_refreshed_store_reports_sync_in_progress_not_pending() {
 #[cfg(windows)]
 fn long_stale_store_still_reports_sync_pending() {
     let sandbox = Sandbox::new("stale");
-    sandbox.write(".wb-switch/accounts.json", ACCOUNTS_A_AND_B);
+    sandbox.write(".wb-switch-plus/accounts.json", ACCOUNTS_A_AND_B);
     sandbox.write(".codebuddy-rotate/state.json", STATE_POINTS_TO_A);
     sandbox.write(
         ".codebuddy/settings.json",
@@ -172,7 +172,7 @@ fn long_stale_store_still_reports_sync_pending() {
 #[cfg(windows)]
 fn consistent_token_reports_no_sync_state() {
     let sandbox = Sandbox::new("consistent");
-    sandbox.write(".wb-switch/accounts.json", ACCOUNTS_A_AND_B);
+    sandbox.write(".wb-switch-plus/accounts.json", ACCOUNTS_A_AND_B);
     sandbox.write(".codebuddy-rotate/state.json", STATE_POINTS_TO_A);
     sandbox.write(
         ".codebuddy/settings.json",
@@ -209,7 +209,7 @@ fn consistent_token_reports_no_sync_state() {
 fn orphaned_settings_token_is_healed_by_sync() {
     let sandbox = Sandbox::new("orphan-heal");
     sandbox.write(
-        ".wb-switch/accounts.json",
+        ".wb-switch-plus/accounts.json",
         r#"[
   {"id": "acct-a", "access_token": "NEW_TOKEN_A", "refresh_token": "rt-a", "variant": "cn"},
   {"id": "acct-b", "access_token": "TOKEN_B", "refresh_token": "rt-b", "variant": "cn"}
@@ -250,7 +250,7 @@ fn orphaned_settings_token_is_healed_by_sync() {
 fn sync_must_not_clobber_another_accounts_token() {
     let sandbox = Sandbox::new("no-clobber");
     sandbox.write(
-        ".wb-switch/accounts.json",
+        ".wb-switch-plus/accounts.json",
         r#"[
   {"id": "acct-a", "access_token": "NEW_TOKEN_A", "refresh_token": "rt-a", "variant": "cn"},
   {"id": "acct-b", "access_token": "TOKEN_B", "refresh_token": "rt-b", "variant": "cn"}
