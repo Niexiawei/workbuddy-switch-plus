@@ -99,7 +99,7 @@ def test_omitted_model_uses_resolved_default(monkeypatch, path, available):
     monkeypatch.setattr(converter, "_check_auth", lambda *a: None)
     monkeypatch.setattr(
         converter, "_cred",
-        lambda: type("Credential", (), {"get_headers": lambda self: {}})(),
+        lambda: type("Credential", (), {"get_headers": lambda self, **kwargs: {}})(),
     )
     monkeypatch.setattr(converter, "_log", lambda *a: None)
     monkeypatch.delenv("CODEBUDDY_LOSSY_PROJECTION", raising=False)

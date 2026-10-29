@@ -62,7 +62,7 @@ def test_routes_filter_system_but_preserve_harness_user(monkeypatch, path):
         return httpx.Response(200, content=b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
     monkeypatch.setattr(converter.httpx, 'AsyncClient', lambda **kw: original_client(transport=httpx.MockTransport(upstream), **kw))
     monkeypatch.setattr(converter, '_check_auth', lambda *a: None)
-    monkeypatch.setattr(converter, '_cred', lambda: type('Credential', (), {'get_headers': lambda self: {}})())
+    monkeypatch.setattr(converter, '_cred', lambda: type('Credential', (), {'get_headers': lambda self, **kwargs: {}})())
     monkeypatch.setattr(converter, '_log', lambda *a: None)
     monkeypatch.setitem(converter.CONFIG, 'desensitize', True)
     monkeypatch.setitem(converter.CONFIG, 'no_compact', False)

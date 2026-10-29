@@ -238,9 +238,10 @@ class SwitchCredentialManager:
         return time.time() * 1000 >= (expires_at - 60_000)
 
     # ── 请求头（与 converter 逐字一致）──
-    def _build_headers_from(self, auth: dict, account: dict) -> dict:
+    def _build_headers_from(self, auth: dict, account: dict, profile: str = "desktop",
+                            request_headers=None) -> dict:
         domain = auth.get("domain") or DEFAULT_DOMAIN
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {decrypt_auth_field(auth.get('accessToken', ''))}",
@@ -250,13 +251,17 @@ class SwitchCredentialManager:
             "X-Domain": domain,
             "User-Agent": converter.USER_AGENT,
         }
+        # CLI 流量透传客户端自己的指纹头（UA 版本段随安装版本变，不能硬编码）。
+        return converter.client_profile.merge_outbound_headers(headers, request_headers, profile)
 
-    def get_headers(self) -> dict:
+    def get_headers(self, profile: str = "desktop", request_headers=None) -> dict:
         with self._lock:
             if self._is_expired():
                 self._refresh()
             s = self._session()
-            return self._build_headers_from(s.get("auth") or {}, s.get("account") or {})
+            return self._build_headers_from(
+                s.get("auth") or {}, s.get("account") or {}, profile, request_headers
+            )
 
     # ── 刷新 ──
     def _refresh(self) -> None:

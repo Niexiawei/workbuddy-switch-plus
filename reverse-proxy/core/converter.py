@@ -65,6 +65,9 @@ from .responses_adapter import (
 )
 from .responses_projection import project_responses_chat_body
 from .system_identity import filter_system_identity
+from . import client_profile
+from . import cn_prompt
+from . import upstream_errors
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -73,6 +76,10 @@ from .system_identity import filter_system_identity
 BACKEND = "https://copilot.tencent.com"
 DEFAULT_DOMAIN = "www.codebuddy.cn"
 USER_AGENT = "codebuddy2openai/2.0"
+
+#: 流式读空闲上限（秒）：超过这么久没有下一个分片，就判定连接已死。
+#: 参考项目用 5 分钟；`WB_STREAM_IDLE` 可覆盖，便于测试与现场排障。
+STREAM_IDLE_SECONDS = float(os.environ.get("WB_STREAM_IDLE", "300"))
 
 # ---------------------------------------------------------------------------
 # 平台相关：定位 auth 目录
@@ -204,7 +211,8 @@ class CredentialManager:
         self._cached = s
         self._mtime = self.path.stat().st_mtime
 
-    def _build_headers_from(self, auth: dict, account: dict) -> dict:
+    def _build_headers_from(self, auth: dict, account: dict, profile: str = client_profile.DESKTOP,
+                            request_headers=None) -> dict:
         domain = auth.get("domain") or DEFAULT_DOMAIN
         h = {
             "Content-Type": "application/json",
@@ -216,15 +224,18 @@ class CredentialManager:
             "X-Domain": domain,
             "User-Agent": USER_AGENT,
         }
-        return h
+        # CLI 流量透传客户端自己的指纹头（UA 版本段随安装版本变，不能硬编码）。
+        return client_profile.merge_outbound_headers(h, request_headers, profile)
 
-    def get_headers(self) -> dict:
+    def get_headers(self, profile: str = client_profile.DESKTOP, request_headers=None) -> dict:
         """返回带最新 token 的后端请求 header；必要时先刷新。"""
         with self._lock:
             if self._is_expired():
                 self._refresh()
             s = self._session()
-            return self._build_headers_from(s.get("auth") or {}, s.get("account") or {})
+            return self._build_headers_from(
+                s.get("auth") or {}, s.get("account") or {}, profile, request_headers
+            )
 
     def summary(self) -> dict:
         s = self._session()
@@ -275,6 +286,23 @@ DEFAULT_MODELS = [
 # 机型/客户端版本不一样时清单会差（例如老客户端下发的配置里就没有 v4.1-flash），
 # 清单里没有就退回 `auto`，避免拿着未知模型打上游整片 400。
 DEFAULT_MODEL = "deepseek-v4.1-flash"
+
+#: 国内版种子清单：远端目录取不到时的兜底（参考项目 `models.ts` 的 seedCatalogue）。
+#: 只有 id 与上下文窗口是已知的，能力字段一律保守（纯文本、不声明思考档位）。
+CN_SEED_MODELS: tuple[tuple[str, int], ...] = (
+    ("deepseek-v4-pro", 1_000_000),
+    ("deepseek-v4-flash", 1_000_000),
+    ("glm-5.3", 1_000_000),
+    ("glm-5.3-flash", 1_000_000),
+    ("minimax-m3", 512_000),
+    ("kimi-k3-1", 1_000_000),
+    ("hy3", 192_000),
+    ("hunyuan-chat", 200_000),
+)
+
+#: 目录没声明上下文 / 输出上限时的默认值（与参考项目一致）。
+DEFAULT_CONTEXT_WINDOW = 200_000
+DEFAULT_MAX_OUTPUT_TOKENS = 32_768
 
 # 配置的默认模型在本机不可用时退回的值。仍然是上游的 `auto`（由后端自己挑）——
 # 退回一个「本机确认存在」的具体模型同样是赌，而 auto 至少不会因为模型名错而整片失败。
@@ -704,6 +732,7 @@ def _normalize_remote_entry(entry: dict) -> dict:
         "supportsToolCall": bool(entry.get("supportsToolCall", entry.get("supports_tool_call"))),
         "supportsImages": bool(entry.get("supportsImages", entry.get("supports_images"))),
         "supportsReasoning": bool(entry.get("supportsReasoning", entry.get("supports_reasoning"))),
+        "disabledMultimodal": bool(entry.get("disabledMultimodal")),
         "onlyReasoning": bool(entry.get("onlyReasoning")),
         "reasoning": reasoning,
         "temperature": entry.get("temperature"),
@@ -871,6 +900,101 @@ def get_available_models() -> list[str]:
         return DEFAULT_MODELS
 
 
+def _reasoning_efforts_of(entry: dict) -> list[str]:
+    """目录声明的可选用思考档位；没声明就是「不知道」，不要瞎猜。"""
+    reasoning = entry.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return []
+    efforts = reasoning.get("supportedEfforts")
+    if not isinstance(efforts, list):
+        return []
+    return [str(level) for level in efforts if isinstance(level, str) and level]
+
+
+def _context_window_of(entry: dict) -> int:
+    """上下文窗口：`maxInputTokens` > `contextWindow.defaultLength` > 默认值。
+
+    `maxInputTokens` 小于 1000 的值一律不采信（上游偶发把 KB 当 token 写），
+    退回默认窗口只会影响压缩，不会让请求失败。
+    """
+    for candidate in (entry.get("maxInputTokens"),
+                      (entry.get("contextWindow") or {}).get("defaultLength")
+                      if isinstance(entry.get("contextWindow"), dict) else None):
+        if isinstance(candidate, (int, float)) and candidate > 1000:
+            return int(candidate)
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def model_metadata_entry(entry: dict, source: str = "catalogue") -> dict:
+    """一条目录条目 → `/v1/models` 的模型对象（OpenAI 字段 + 能力扩展）。
+
+    能力字段只报目录明确声明的：`supportsImages` 为 true 才给 image；
+    `disabledMultimodal` 为 true 时即使声明了图片也按纯文本（两者冲突时后者赢，
+    与参考项目 `models.ts` 的判据一致）。
+    """
+    supports_images = bool(entry.get("supportsImages")) and not entry.get("disabledMultimodal")
+    efforts = _reasoning_efforts_of(entry) if entry.get("supportsReasoning") else []
+    return {
+        "id": entry.get("id"),
+        "object": "model",
+        "created": 1700000000,
+        "owned_by": "codebuddy",
+        "name": entry.get("name") or entry.get("id"),
+        "context_window": _context_window_of(entry),
+        "max_output_tokens": int(entry["maxOutputTokens"])
+        if isinstance(entry.get("maxOutputTokens"), (int, float)) and entry["maxOutputTokens"] > 0
+        else DEFAULT_MAX_OUTPUT_TOKENS,
+        "input_modalities": ["text", "image"] if supports_images else ["text"],
+        "supports_tool_call": bool(entry.get("supportsToolCall", True)),
+        "reasoning_efforts": efforts,
+        "tags": [str(tag) for tag in (entry.get("tags") or []) if tag],
+        "source": source,
+    }
+
+
+def list_model_metadata(*, refresh: bool = False) -> list[dict]:
+    """`/v1/models` 的数据源：目录 + 国内版种子并集。
+
+    种子只在目录里没有该 id 时补位，且只对国内版生效——国际版上游没有这些模型，
+    列出来会让客户端选中一个 404。能力字段按参考项目的保守口径：纯文本、
+    不声明思考档位。
+    """
+    try:
+        cred = _cred()
+    except HTTPException:
+        cred = None
+    try:
+        realm = _catalog_realm_or_cn(cred)
+    except Exception:  # noqa: BLE001 - 判不出就按国内版
+        realm = "cn"
+    try:
+        entries = get_model_catalog_for(realm, refresh=refresh)
+    except Exception:  # noqa: BLE001 - 目录坏了也不能让 /v1/models 挂掉
+        entries = []
+
+    models = [model_metadata_entry(entry) for entry in entries if entry.get("id")]
+    seen = {model["id"] for model in models}
+    if realm == "cn":
+        for model_id, context_window in CN_SEED_MODELS:
+            if model_id in seen:
+                continue
+            models.append({
+                "id": model_id,
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "codebuddy",
+                "name": model_id,
+                "context_window": context_window,
+                "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+                "input_modalities": ["text"],
+                "supports_tool_call": True,
+                "reasoning_efforts": [],
+                "tags": [],
+                "source": "seed",
+            })
+    return models
+
+
 # 后端请求体里出现过的额外字段（透传时若客户端给了就保留）
 PASSTHROUGH_BODY_KEYS = {
     "model",
@@ -1014,12 +1138,10 @@ def list_models(
     x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ):
     _check_auth(authorization, x_api_key)
-    models = get_available_models()
-    data = [
-        {"id": m, "object": "model", "created": 1700000000, "owned_by": "codebuddy"}
-        for m in models
-    ]
-    return {"object": "list", "data": data}
+    # 只给 id 的清单无法让客户端判断「这个模型能不能读图 / 能开哪档思考」，
+    # agent 客户端只能盲选。改为目录 + 种子并集，并按 OpenAI 习惯把能力挂在模型对象上
+    # （未知字段对老客户端无副作用）。
+    return {"object": "list", "data": list_model_metadata()}
 
 
 @app.post("/v1/chat/completions")
@@ -1053,9 +1175,15 @@ async def chat_completions(
             },
         )
 
-    # 构造后端 body：只透传已知的合法字段
+    # 构造后端 body：只透传已知的合法字段。
+    # CLI 与桌面端的字段集不同（CLI 多 extra_vars / cache_retention），
+    # 所以白名单要按客户端 profile 取并集，否则 CLI 的字段会被静默丢掉。
+    profile = client_profile.detect(request.headers)
+    body_keys = PASSTHROUGH_BODY_KEYS
+    if profile == client_profile.CLI:
+        body_keys = PASSTHROUGH_BODY_KEYS | set(client_profile.CLI_EXTRA_BODY_KEYS)
     client_wants_stream = bool(payload.get("stream"))
-    body = {k: payload[k] for k in PASSTHROUGH_BODY_KEYS if k in payload}
+    body = {k: payload[k] for k in body_keys if k in payload}
     body.setdefault("model", resolve_default_model())
     # 后端只支持流式：始终以 stream=True 调后端，非流式由转换器聚合
     body["stream"] = True
@@ -1071,7 +1199,8 @@ async def chat_completions(
             for m in body["messages"]
         ]
 
-    body = filter_system_identity(body)
+    # 再按实测片段改写 11128 触发的措辞（放在过滤之后：改写出的中性句不该被删掉）。
+    body = cn_prompt.apply(filter_system_identity(body))
 
     # 可选：脱敏。缓解客户端合规模板（如 Codex CLI / ZCode 注入的说明文字）被后端误判为敏感词。
     # 处理 system / developer 消息、Codex 注入的上下文 user 消息，以及 tools 的 description。
@@ -1104,7 +1233,7 @@ async def chat_completions(
         f"[{rid}] ── REQUEST BODY (发往后端) ──\n{json.dumps(body, ensure_ascii=False, indent=2)}"
     )
 
-    headers = cred.get_headers()
+    headers = cred.get_headers(profile=profile, request_headers=request.headers)
     url = f"{BACKEND}/v2/chat/completions"
     t0 = time.time()
 
@@ -1125,9 +1254,11 @@ async def chat_completions(
                         f"[{rid}] ✗ HTTP {r.status_code} | {model_name} | {_truncate(raw.decode('utf-8', 'replace'), 200)}"
                     )
                     _log(f"[{rid}] ── ERROR BODY ──\n{raw.decode('utf-8', 'replace')}")
+                    failure = upstream_errors.classify(
+                        r.status_code, raw.decode("utf-8", "replace"))
                     raise HTTPException(
-                        status_code=r.status_code,
-                        detail=_safe_err_raw(raw, r.status_code),
+                        status_code=failure.http_status,
+                        detail=upstream_errors.error_payload(failure),
                     )
                 collected = await _collect_stream(r)
     except HTTPException:
@@ -1257,16 +1388,14 @@ async def _collect_stream(response: httpx.Response) -> dict:
 
 
 def _safe_err_raw(raw: bytes, status: int) -> dict:
-    try:
-        return json.loads(raw.decode("utf-8", "replace"))
-    except Exception:
-        return {
-            "error": {
-                "message": raw.decode("utf-8", "replace")[:500],
-                "type": "upstream_error",
-                "code": status,
-            }
-        }
+    """上游错误体 → 统一错误结构（保留业务码，附可操作提示）。
+
+    上游给的是合法 JSON 也照样重新包装：直接把 `{"code":11128,"msg":...}`
+    透给客户端，调用方只看到「400 但不知道是什么」，日志里也没法按类型统计。
+    """
+    return upstream_errors.error_payload(
+        upstream_errors.classify(status, raw.decode("utf-8", "replace"))
+    )
 
 
 async def _stream_upstream(
@@ -1286,12 +1415,14 @@ async def _stream_upstream(
     tool_names: list[str] = []
     usage: dict = {}
     saw_filter = False
+    saw_done = False      # 是否见过 data: [DONE]
+    saw_content = False   # 是否真的吐过内容 / 工具调用（判空回答用）
     buf = b""
     raw_parts: list[bytes] = []  # 累积完整原始 SSE
     prefix = f"[{rid}] " if rid else ""
 
     def _feed(chunk: bytes):
-        nonlocal finish_reason, saw_filter, buf
+        nonlocal finish_reason, saw_filter, buf, saw_done, saw_content
         # 行缓冲解析：把累计的 chunk 按 data: 行切出来统计
         buf += chunk
         while b"\n" in buf:
@@ -1301,6 +1432,7 @@ async def _stream_upstream(
                 continue
             data = line[5:].strip()
             if data == b"[DONE]":
+                saw_done = True
                 continue
             try:
                 obj = json.loads(data)
@@ -1311,7 +1443,10 @@ async def _stream_upstream(
             for ch in obj.get("choices") or []:
                 if ch.get("finish_reason"):
                     finish_reason = ch["finish_reason"]
-                for tc in (ch.get("delta") or {}).get("tool_calls") or []:
+                delta = ch.get("delta") or {}
+                if delta.get("content") or delta.get("reasoning_content"):
+                    saw_content = True
+                for tc in delta.get("tool_calls") or []:
                     nm = (tc.get("function") or {}).get("name")
                     if nm:
                         tool_names.append(nm)
@@ -1328,7 +1463,12 @@ async def _stream_upstream(
                 saw_filter = True
 
     try:
-        async with httpx.AsyncClient(timeout=None, **_proxy_kwargs()) as c:
+        # 读超时 = 空闲上限：上游半死（连上但不再出帧）时主动断开，
+        # 而不是把客户端吊在一个永不结束的流上。
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=STREAM_IDLE_SECONDS, write=30.0, pool=15.0),
+            **_proxy_kwargs(),
+        ) as c:
             async with c.stream("POST", url, headers=headers, json=body) as r:
                 if r.status_code != 200:
                     err = await r.aread()
@@ -1336,7 +1476,10 @@ async def _stream_upstream(
                         f"{prefix}✗ HTTP {r.status_code} | {model_name} | {_truncate(err.decode('utf-8', 'replace'), 200)}"
                     )
                     _log(f"{prefix}── ERROR BODY ──\n{err.decode('utf-8', 'replace')}")
-                    yield _err_event(err, r.status_code)
+                    failure = upstream_errors.classify(
+                        r.status_code, err.decode("utf-8", "replace"))
+                    _log(f"{prefix}✗ 分类 {failure.kind} | code={failure.code}")
+                    yield upstream_errors.sse_error_frame(failure)
                     return
                 async for chunk in r.aiter_bytes():
                     if chunk:
@@ -1344,8 +1487,23 @@ async def _stream_upstream(
                         _feed(chunk)
                         yield chunk
     except httpx.HTTPError as e:
-        _log(f"{prefix}✗ 网络错误 | {model_name} | {e}")
-        yield _err_event(str(e).encode(), 502)
+        kind = (upstream_errors.STREAM_TIMEOUT if isinstance(e, httpx.TimeoutException)
+                else upstream_errors.UNAVAILABLE)
+        failure = upstream_errors.classify(0, "", error_type=kind, message=str(e))
+        _log(f"{prefix}✗ 网络错误 | {model_name} | {kind} | {e}")
+        yield upstream_errors.sse_error_frame(failure)
+
+    # G5：没有终态帧的流不能当成功收尾。上游半路断连（没发 FIN）时
+    # aiter_bytes 会正常结束，客户端却拿到一份没有 finish_reason 的回答。
+    if not saw_done and finish_reason is None:
+        failure = upstream_errors.classify(
+            0, "",
+            error_type=upstream_errors.EMPTY_RESPONSE if not saw_content else upstream_errors.INCOMPLETE_STREAM,
+            message=("上游返回了空回答（既无内容也无终态帧）" if not saw_content
+                     else "上游流在终态帧之前结束，回答不完整"),
+        )
+        _log(f"{prefix}✗ {failure.kind} | {model_name}")
+        yield upstream_errors.sse_error_frame(failure)
 
     # 流结束：输出完成日志
     elapsed = time.time() - t0 if t0 else 0
@@ -1493,7 +1651,7 @@ async def create_response(
             },
         )
 
-    chat_body = filter_system_identity(chat_body)
+    chat_body = cn_prompt.apply(filter_system_identity(chat_body))
     chat_body, projection_stats = project_responses_chat_body(
         chat_body, preserve=os.environ.get("CODEBUDDY_LOSSY_PROJECTION", "0") != "1"
     )
@@ -1546,8 +1704,11 @@ async def create_response(
             _log(
                 f"[{rid}] ✗ HTTP {status_code} | {model_name} | {_truncate(raw.decode('utf-8', 'replace'), 200)}"
             )
+            failure = upstream_errors.classify(
+                status_code, raw.decode("utf-8", "replace"))
             raise HTTPException(
-                status_code=status_code, detail=_safe_err_raw(raw, status_code)
+                status_code=failure.http_status,
+                detail=upstream_errors.error_payload(failure),
             )
         converter = ResponsesStreamConverter(model=model_name)
         for line in raw.decode("utf-8", "replace").splitlines():
@@ -1684,7 +1845,7 @@ async def create_message(
     if "stream_options" not in chat_body:
         chat_body["stream_options"] = {"include_usage": True}
 
-    chat_body = filter_system_identity(chat_body)
+    chat_body = cn_prompt.apply(filter_system_identity(chat_body))
     if CONFIG.get("desensitize"):
         chat_body = desensitize_body(
             chat_body,
@@ -1785,7 +1946,12 @@ async def _stream_anthropic(
     prefix = f"[{rid}] " if rid else ""
 
     try:
-        async with httpx.AsyncClient(timeout=None, **_proxy_kwargs()) as c:
+        # 读超时 = 空闲上限：上游半死（连上但不再出帧）时主动断开，
+        # 而不是把客户端吊在一个永不结束的流上。
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=STREAM_IDLE_SECONDS, write=30.0, pool=15.0),
+            **_proxy_kwargs(),
+        ) as c:
             async with c.stream("POST", url, headers=headers, json=body) as r:
                 if r.status_code != 200:
                     err = await r.aread()
@@ -1878,7 +2044,7 @@ async def count_tokens(
     chat_body["stream"] = True  # 后端只支持流式
     chat_body["stream_options"] = {"include_usage": True}
 
-    chat_body = filter_system_identity(chat_body)
+    chat_body = cn_prompt.apply(filter_system_identity(chat_body))
     if CONFIG.get("desensitize"):
         chat_body = desensitize_body(
             chat_body,
