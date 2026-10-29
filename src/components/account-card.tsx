@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarCheck2, CalendarDays, CalendarOff, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Info, Loader2, PackageOpen, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
+import { ArrowRight, CalendarCheck2, CalendarDays, CalendarOff, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Info, Loader2, Network, PackageOpen, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -265,6 +265,16 @@ interface Props {
   onRefresh?: (a: AccountMeta) => void;
   /** 打开「账号信息」弹框（查看信息、编辑备注、选择显示字段）。 */
   onShowInfo?: (a: AccountMeta) => void;
+  /**
+   * 反代池状态（`available` / `cooling` / `paused` / `exhausted` / `invalid`）。
+   * undefined 表示反代服务没在跑或没登录 —— 此时整块池信息都不渲染，
+   * 不能把「查不到」画成「正常」。
+   */
+  poolState?: string;
+  /** 该账号在反代池里是否启用（false = 池设置里暂停）。undefined 表示未知。 */
+  poolEnabled?: boolean;
+  /** 加入 / 移出反代池。与反代页「账号池」的暂停/恢复是同一个开关。 */
+  onTogglePool?: (a: AccountMeta) => void;
   onSwitch?: (a: AccountMeta) => void;
   todayCheckedIn?: boolean;
   /** 单账号参与许可，独立于全局开关；undefined 表示配置尚未加载。 */
@@ -409,7 +419,7 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onShowInfo, onSwitch, todayCheckedIn, autoCheckinAllowed, travelStatus, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodeExtInstalled, vscodeExtExtensionInstalled, vscodeExtAvailable, vscodeExtActive, vscodeExtBusy, vscodeExtLoading, onSwitchVscodeExt, jetbrainsInstalled, jetbrainsPluginInstalled, jetbrainsAvailable, jetbrainsActive, jetbrainsBusy, jetbrainsLoading, onSwitchJetbrains, enabledTools, featuresDisabled = true, compact = false }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onShowInfo, poolState, poolEnabled, onTogglePool, onSwitch, todayCheckedIn, autoCheckinAllowed, travelStatus, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodeExtInstalled, vscodeExtExtensionInstalled, vscodeExtAvailable, vscodeExtActive, vscodeExtBusy, vscodeExtLoading, onSwitchVscodeExt, jetbrainsInstalled, jetbrainsPluginInstalled, jetbrainsAvailable, jetbrainsActive, jetbrainsBusy, jetbrainsLoading, onSwitchJetbrains, enabledTools, featuresDisabled = true, compact = false }: Props) {
   /** 支持工具开关：关闭的端整块不渲染（缺省视为开启）。 */
   const toolEnabled = (id: ToolId) => enabledTools?.[id] !== false;
   const [resourcesOpen, setResourcesOpen] = useState(false);
@@ -425,6 +435,12 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onShowInf
   }, [rateLimits]);
   const name = displayName(account);
   const expired = typeof account.expiresAt === "number" && account.expiresAt < Date.now();
+  /** 池状态徽标的文案；null 表示这条卡不该挂池徽标。 */
+  const poolLabel =
+    poolState === "cooling" ? "反代池：冷却中"
+      : poolState === "exhausted" ? "反代池：积分耗尽"
+        : poolState === "invalid" && !account.needsRelogin ? "反代池：凭据失效"
+          : null;
   const avatarClass = avatarTone(name);
   const resources = creditResources(credit);
   const visibleResources = resources.slice(0, 2);
@@ -464,6 +480,12 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onShowInf
         })}
       {travelChip(travelStatus)}
       {rateLimitChip(rateLimits, now)}
+      {/*
+        反代池状态：只报异常（冷却 / 积分耗尽 / 凭据失效），「可用」不额外挂一枚徽标——
+        每张卡都亮着「池可用」等于没有信息量。`needsRelogin` 已经有自己的徽标，
+        这里不再重复报同一个原因，只说「反代侧也把它算成不可用」。
+      */}
+      {poolLabel ? <Badge variant="warning" className={chipClass}>{poolLabel}</Badge> : null}
       {(account.needsRelogin || expired) && <Badge variant="warning" className={chipClass}>{account.needsRelogin ? "需重新登录" : "Token 已过期"}</Badge>}
       {creditPriority && (
         <Tooltip>
@@ -557,6 +579,14 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onShowInf
               <DropdownMenuItem disabled={featuresDisabled || !onShowInfo} onSelect={() => onShowInfo?.(account)}>
                 <Info />账号信息
               </DropdownMenuItem>
+              {/* 反代池归属是账号的一个属性，不是反代服务自己的账号表：
+                  入口放在账号管理里，和反代页的「暂停 / 恢复」是同一个开关。
+                  池数据取不到（反代没跑 / 没登录）时整项不渲染。 */}
+              {!demoModeEnabled && onTogglePool && poolEnabled !== undefined ? (
+                <DropdownMenuItem disabled={featuresDisabled} onSelect={() => onTogglePool(account)}>
+                  <Network />{poolEnabled ? "移出反代池" : "加入反代池"}
+                </DropdownMenuItem>
+              ) : null}
               {!demoModeEnabled && onCheckin && todayCheckedIn !== true && (
                 <DropdownMenuItem disabled={featuresDisabled || !onCheckin} onSelect={() => onCheckin?.(account)}>
                   <CircleCheck />手动签到

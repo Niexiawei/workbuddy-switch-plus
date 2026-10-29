@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, QrCode, RefreshCw } from "lucide-react";
+import { Plus, QrCode, RefreshCw, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -8,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { rp, POOL_STATE_LABELS, ROUTING_LABELS, type RpAccount, type RpCheckinLog, type RpOverview } from "@/lib/reverse-proxy";
+import { isDesktop } from "@/lib/api";
 import { Banner, Empty, Field, PanelHeader, StatCard, ToneBadge, fmtNum, fmtTime } from "./rp-shared";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 import { AccountLimitsDialog } from "./account-limits-dialog";
@@ -196,6 +198,7 @@ export function AccountsPanel({ overview, reload, onAddAccount, onBatchScan }: {
   onBatchScan: () => void;
 }) {
   const { accounts, pool } = overview;
+  const desktop = isDesktop();
   // 上游最近一次读取失败的说明（空 = 没问题）。它决定「冷却状态未知」那一条
   // 要不要出现 —— 见 upstreamNote。取在这里而不是每行各取一次：整批共用一个值。
   const wb2apiError = pool.wb2api_error ?? "";
@@ -384,14 +387,29 @@ export function AccountsPanel({ overview, reload, onAddAccount, onBatchScan }: {
             >
               批量活跃上报
             </Button>
-            <Button size="sm" onClick={onAddAccount}><Plus className="size-3.5" />添加账号</Button>
-            <Button size="sm" variant="outline" onClick={onBatchScan}><QrCode className="size-3.5" />批量扫码</Button>
+            {/* 账号的增删与登录归账户管理（同一份账号库）；这里只留一个入口，
+                免得两个页面各有一套「添加账号」流程，最后各自维护一份状态。 */}
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/"><Users className="size-3.5" />账户管理</Link>
+            </Button>
+            {/* 桌面端的「添加账号」直接复用主项目的 OAuth 扫码（写同一份账号库）；
+               批量扫码只有反代自己的服务端流程，Rust 引擎还没有，所以桌面端不渲染——
+                摆一个点了必然失败的按钮比没有按钮更糟。 */}
+            <Button size="sm" onClick={onAddAccount} title={desktop ? "走账户管理的 OAuth 扫码登录" : undefined}>
+              <Plus className="size-3.5" />{desktop ? "扫码登录" : "添加账号"}
+            </Button>
+            {desktop ? null : (
+              <Button size="sm" variant="outline" onClick={onBatchScan}><QrCode className="size-3.5" />批量扫码</Button>
+            )}
           </div>
         }
       />
 
+      {/* 单一账号来源：这里不维护第二份账号表，只维护「池」这一层属性（是否参与调度、
+          冷却、积分、限速）。账号的增删与登录一律在账户管理里做，避免两个页面各说一套。 */}
       <Banner tone="muted">
-        账号来自 workbuddy-switch 的账号库，服务只读：在 switch 里增删或重新登录账号后，这里会在数秒内自动同步，无需重启服务。
+        账号与「账户管理」共用同一份账号库：新增、删除、重新登录都在账户管理完成，这里会在数秒内自动同步。
+        本页只管池内调度（是否参与轮换、冷却、积分与限速），不再单独保存账号。
       </Banner>
 
 
@@ -463,6 +481,17 @@ export function AccountsPanel({ overview, reload, onAddAccount, onBatchScan }: {
                     </td>
                     <td className="px-3 py-2.5">
                       <ToneBadge tone={state.tone}>{state.label}</ToneBadge>
+                      {/* 「凭据异常」有四种来源，处置方式完全不同，必须分开说：
+                          桌面端标记需重新登录 / 上游确认失效 / 账号库里没有 token / 读不出来。 */}
+                      {a.needs_relogin ? (
+                        <div className="mt-1 text-[11px] text-destructive">
+                          需重新登录{a.needs_relogin_reason ? `（${a.needs_relogin_reason}）` : ""}
+                        </div>
+                      ) : a.auth_invalid ? (
+                        <div className="mt-1 text-[11px] text-destructive">凭据已被上游拒绝 · 先刷新再试</div>
+                      ) : a.has_token === false ? (
+                        <div className="mt-1 text-[11px] text-destructive">账号库里没有可用 token</div>
+                      ) : null}
                       <div className="mt-1 text-[11px] text-muted-foreground">
                         {a.checkin_supported === false
                           ? "该版本无签到"
@@ -519,7 +548,7 @@ export function AccountsPanel({ overview, reload, onAddAccount, onBatchScan }: {
                           {limitsBadge(a) ? <span className="ml-1 rounded bg-amber-500/20 px-1 text-[10px] font-semibold text-amber-500">{limitsBadge(a)}</span> : null}
                         </Button>
                         <Button variant="outline" size="sm" className="h-7 shrink-0 whitespace-nowrap px-2 text-xs" onClick={() => askToggle(a)}>{a.enabled ? "暂停" : "恢复"}</Button>
-                        <Button variant="outline" size="sm" className="h-7 shrink-0 whitespace-nowrap px-2 text-xs text-destructive hover:text-destructive" onClick={() => askDelete(a)}>删除</Button>
+                        <Button variant="outline" size="sm" className="h-7 shrink-0 whitespace-nowrap px-2 text-xs text-destructive hover:text-destructive" title="只从反代池移除，账号库里的记录保留" onClick={() => askDelete(a)}>移出池</Button>
                       </div>
                     </td>
                   </tr>

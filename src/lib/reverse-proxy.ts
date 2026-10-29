@@ -183,6 +183,18 @@ export type RpAccount = {
   last_error?: string | null; expires_at?: number; expired?: boolean;
   refresh_available?: boolean; request_count?: number;
   /**
+   * 主项目账号库的「需重新登录」判定（`accounts.json` 的 `needs_relogin`）。
+   *
+   * 反代选号与账户管理必须用同一判据：这个号为真时池状态是 `invalid`、不参与调度。
+   * 界面拿它在池里单独提示「去账户管理重新登录」，而不是笼统地说「凭据异常」。
+   */
+  needs_relogin?: boolean;
+  needs_relogin_reason?: string;
+  /** 上游已确认凭据失效（刷新后仍 401）。与 needs_relogin 分开展示，处置不同。 */
+  auth_invalid?: boolean;
+  /** 账号库里是否还留有可用 token。为假说明这条记录已经空了。 */
+  has_token?: boolean;
+  /**
    * 派猫猫旅行的展示档位（与服务端 travel_label 一一对应）：
    * traveling 旅行中 / finished 今日已派 / no-buddy 无 Buddy / untraveled 未旅行。
    */

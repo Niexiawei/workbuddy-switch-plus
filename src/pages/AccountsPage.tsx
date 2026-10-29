@@ -59,6 +59,7 @@ import {
   variantUsesIntlCodebuddyIde,
 } from "@/lib/variant";
 import { useSupportedTools } from "@/lib/supported-tools";
+import { getToken as getProxyToken, rp, type RpAccount } from "@/lib/reverse-proxy";
 import type { AccountMeta, AppStatus, CheckinConfig, CreditExpiry, RateLimitEntry, TravelConfig, TravelStatus } from "@/lib/types";
 import { displayName } from "@/lib/account-display";
 import { cn } from "@/lib/utils";
@@ -496,6 +497,49 @@ export default function AccountsPage() {
   // 指向旧引用，导致拉回的仍是挂载时的旧判断。
   const refreshCodebuddyCliStatusRef = useRef(refreshCodebuddyCliStatus);
   refreshCodebuddyCliStatusRef.current = refreshCodebuddyCliStatus;
+
+  /**
+   * 反代池状态。
+   *
+   * 账号池不再是反代页私有的账号表：两边读的是同一份 `accounts.json`，池只多一层
+   * 「这个号参不参与调度」的属性。这里拉一份池快照，给卡片的池徽标与
+   * 「加入 / 移出反代池」菜单项用；写操作也走反代管理面，和反代页的暂停/恢复同源。
+   *
+   * 拉不到（反代没启动、没登录、webui 连不上）时整块按「未知」处理 —— 不渲染徽标、
+   * 不渲染菜单项，而不是把「查不到」画成「正常」。
+   */
+  const [poolMap, setPoolMap] = useState<Record<string, RpAccount>>({});
+
+  async function loadPoolMap() {
+    // 没登录过管理面就不必每 30 秒撞一次 401：池信息只在登录后才有意义。
+    if (!getProxyToken()) {
+      setPoolMap({});
+      return;
+    }
+    try {
+      const summary = await rp.poolSummary();
+      const next: Record<string, RpAccount> = {};
+      for (const row of summary.accounts ?? []) next[row.id] = row;
+      setPoolMap(next);
+    } catch {
+      setPoolMap({});
+    }
+  }
+
+  async function onTogglePool(account: AccountMeta) {
+    const row = poolMap[account.id];
+    if (!row) return;
+    try {
+      await rp.editAccount(row.id, { enabled: !row.enabled });
+      toast.success(row.enabled ? `已把「${displayName(account)}」移出反代池` : `已把「${displayName(account)}」加入反代池`,
+        { description: row.enabled ? "账号本身不受影响，仍可在各个客户端里使用。" : "反代请求会重新分配到这个账号。" });
+      await loadPoolMap();
+    } catch (error) {
+      toast.error("反代池设置失败", { description: api.asError(error) });
+    }
+  }
+
+  useVisibleInterval(() => void loadPoolMap(), 30_000, true);
 
   // 兜底轮询：页面可见且距上次扫描 ≥ 5 分钟时拉一次（IDE 日志扫描在后端按同一间隔节流）。
   // 图标何时消失由卡片本地按 `resetAt` 每秒判定（跨过官方重置时刻自动消失），不依赖这里的轮询。
@@ -1096,6 +1140,9 @@ export default function AccountsPage() {
                 onDelete={onDelete}
                 onSwitch={setSwitchAccount}
                 onShowInfo={setInfoTarget}
+                poolState={poolMap[a.id]?.pool_state}
+                poolEnabled={poolMap[a.id]?.enabled}
+                onTogglePool={onTogglePool}
                 onCheckin={checkinAvailable ? onCheckin : undefined}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
