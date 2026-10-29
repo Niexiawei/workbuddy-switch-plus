@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ALERT_PASSWORD_MASK, pickAlertPatch, rp } from "./reverse-proxy";
+import { ALERT_PASSWORD_MASK, pickAlertPatch, rp, setHostProvider } from "./reverse-proxy";
 
 /**
  * 新增面板的 API 客户端契约：告警 / 模型别名 / 用量统计。
@@ -45,8 +45,9 @@ function call(fetchMock: ReturnType<typeof stubFetch>, index = 0): [string, Requ
 
 beforeEach(() => {
   stubLocalStorage();
-  localStorage.setItem("wb.rp.base", "http://127.0.0.1:8787");
-  localStorage.setItem("wb.rp.token", TOKEN);
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
+    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
 });
 
 afterEach(() => {
@@ -61,7 +62,7 @@ describe("告警配置 API", () => {
     const [url, init] = call(fetchMock);
     expect(url).toBe("http://127.0.0.1:8787/admin/api/alerts");
     expect(init.method ?? "GET").toBe("GET");
-    expect(init.headers).toMatchObject({ "X-Admin-Token": TOKEN });
+    expect(init.headers).toMatchObject({ "X-Proxy-Host-Token": TOKEN });
   });
 
   it("saveAlerts() 用 PUT 且只发传进来的键", async () => {

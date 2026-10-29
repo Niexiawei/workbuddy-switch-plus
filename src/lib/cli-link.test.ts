@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { disableCodebuddyCliProxy, enableCodebuddyCliProxy } from "./api";
 import { normalizeProxyBase } from "./cli-link";
-import { rp } from "./reverse-proxy";
+import { rp, setHostProvider } from "./reverse-proxy";
 
 /**
  * CodeBuddy CLI 接入卡片的两类契约：
@@ -42,8 +42,9 @@ function call(fetchMock: ReturnType<typeof stubFetch>, index = 0): [string, Requ
 
 beforeEach(() => {
   stubLocalStorage();
-  localStorage.setItem("wb.rp.base", "http://127.0.0.1:8787");
-  localStorage.setItem("wb.rp.token", TOKEN);
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
+    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
   vi.stubGlobal("window", { location: { origin: PAGE_ORIGIN } });
 });
 
@@ -97,7 +98,7 @@ describe("CLI 专用密钥的管理端契约", () => {
     const [url, init] = call(fetchMock);
     expect(url).toBe("http://127.0.0.1:8787/admin/api/cli/key");
     expect(init.method ?? "GET").toBe("GET");
-    expect(init.headers).toMatchObject({ "X-Admin-Token": TOKEN });
+    expect(init.headers).toMatchObject({ "X-Proxy-Host-Token": TOKEN });
     expect(result.key).toBe("sk-wb-1");
   });
 

@@ -6,11 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Banner, CodeBlock, CopyButton, ToneBadge } from "@/components/reverse-proxy/rp-shared";
 import { getBaseUrl } from "@/lib/reverse-proxy";
 import {
-  adoptBaseUrl, serviceOpenDataDir, serviceRestartWithHost, serviceRestartWithPort, serviceSetExe, serviceStopElevated,
+  adoptBaseUrl, serviceOpenDataDir, serviceRestartWithHost, serviceRestartWithPort, serviceSetExe,
+  serviceStart, serviceStatus, serviceStop, serviceStopElevated,
   serviceSupported,
   type RpServiceStatus,
 } from "@/lib/reverse-proxy-service";
-import { engineStart, engineStatus, engineStop, getEngine } from "@/lib/proxy-engine";
 
 /**
  * 反代服务的进程控制台。
@@ -20,7 +20,9 @@ import { engineStart, engineStatus, engineStop, getEngine } from "@/lib/proxy-en
  */
 export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
   const supported = serviceSupported();
-  const rustEngine = getEngine() === "rust";
+  // 引擎切换已退场：这一屏只服务「反代服务old」（Python 独立进程）。
+  // 内置 Rust 反代由 uiltin-service-card.tsx 管理，不再走这里。
+  const rustEngine = false;
   const [status, setStatus] = useState<RpServiceStatus | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "elevate" | "exe" | "open" | "refresh" | "lan" | "port">("");
   const [error, setError] = useState("");
@@ -45,7 +47,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     if (!supported) return;
     if (!quiet) setBusy("refresh");
     try {
-      apply(await engineStatus());
+      apply(await serviceStatus());
       if (!quiet) setError("");
     } catch (cause) {
       if (!quiet) setError(cause instanceof Error ? cause.message : String(cause));
@@ -72,7 +74,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     setBusy("start");
     setError("");
     try {
-      const next = await engineStart(getEngine(), status?.port);
+      const next = await serviceStart(status?.port);
       adoptBaseUrl(next);
       apply(next);
       toast.success("反代服务已启动");
@@ -89,7 +91,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     setBusy("stop");
     setError("");
     try {
-      apply(await engineStop());
+      apply(await serviceStop());
       setStopFailed(false);
       toast.success("反代服务已停止");
     } catch (cause) {
@@ -103,7 +105,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
   }
 
   async function stopElevated() {
-    if (getEngine() === "rust") {
+    if (rustEngine) {
       toast.error("Rust 引擎由应用托管，不需要提权停止");
       return;
     }

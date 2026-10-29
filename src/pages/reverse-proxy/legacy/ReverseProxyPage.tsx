@@ -13,7 +13,7 @@ import {
   type RpOverview, type RpSession, type RpToken, type RpUser,
 } from "@/lib/reverse-proxy";
 import { saveLogin, savedLogin, serviceSupported, type RpSavedLogin } from "@/lib/reverse-proxy-service";
-import { getEngine, setEngine, type ProxyEngineMode } from "@/lib/proxy-engine";
+// 引擎切换已退场（决策 4）：这一页只剩 Python「反代服务old」一条链路。
 import { isDesktop } from "@/lib/api";
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { performSignOut, shouldAutoLogin } from "@/lib/sign-out";
@@ -206,26 +206,14 @@ export default function ReverseProxyPage() {
     });
   }
 
-  const [engine] = useState<ProxyEngineMode>(() => getEngine());
   /**
    * 桌面端与 webui 的「添加账号」是两条不同链路：
    *
    *   · 桌面端：OAuth 扫码走主项目（core 的 oauth 模块，直接写 accounts.json），
    *     与账户管理页是同一个流程 —— 加完两个页面同时看得到，不需要反代再实现一遍。
    *   · webui：浏览器里没有 Tauri 命令，只能用反代自己的 `/admin/api/oauth/*`。
-   *     （Rust 引擎下这些路由仍是 501，见迁移计划 §11；webui 目前配 Python 引擎。）
    */
   const desktop = isDesktop();
-
-  /**
-   * 切换引擎：两套实现各自有独立的会话与端口，切完必须重载页面，
-   * 否则会拿着 A 引擎的 admin token 去打 B 引擎。
-   */
-  function switchEngine(mode: ProxyEngineMode) {
-    if (mode === engine) return;
-    setEngine(mode);
-    window.location.reload();
-  }
 
   const counts = useMemo<Record<string, number | undefined>>(() => ({
     accounts: overview?.accounts.length,
@@ -253,19 +241,7 @@ export default function ReverseProxyPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 rounded-lg border border-border/70 p-0.5" title="灰度期可切换引擎做对比">
-            {(["python", "rust"] as const).map((mode) => (
-              <Button
-                key={mode}
-                size="sm"
-                variant={engine === mode ? "default" : "ghost"}
-                className="h-7 px-2 text-[11px]"
-                onClick={() => switchEngine(mode)}
-              >
-                {mode === "python" ? "Python" : "Rust"}
-              </Button>
-            ))}
-          </div>
+          <ToneBadge tone="warn">Python 版</ToneBadge>
           <ToneBadge tone={session.role === "admin" ? "ok" : "muted"}>
             <ShieldCheck className="size-3" />{session.username} · {session.role === "admin" ? "管理员" : "只读"}
           </ToneBadge>

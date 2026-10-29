@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  creditFromMilli, fmtCredit, fmtCreditTime, rp, type RpAccount,
+  creditFromMilli, fmtCredit, fmtCreditTime, rp, setHostProvider, type RpAccount,
 } from "./reverse-proxy";
 import { activeNote, fmtLeft, upstreamNote } from "@/components/reverse-proxy/accounts-panel";
 
@@ -49,8 +49,9 @@ function call(fetchMock: ReturnType<typeof stubFetch>, index = 0): [string, Requ
 
 beforeEach(() => {
   stubLocalStorage();
-  localStorage.setItem("wb.rp.base", "http://127.0.0.1:8787");
-  localStorage.setItem("wb.rp.token", TOKEN);
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
+    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
 });
 
 afterEach(() => {
@@ -59,7 +60,7 @@ afterEach(() => {
 });
 
 describe("活跃上报 API 客户端", () => {
-  it("accountAction(active) 打到单账号动作路径，方法 POST 且带 X-Admin-Token", async () => {
+  it("accountAction(active) 打到单账号动作路径，方法 POST 且带 X-Proxy-Host-Token", async () => {
     const fetchMock = stubFetch({ id: "a1", ok: false, sent: 0, count: 1, conversationId: "wb2api-1", message: "凭据无效" });
 
     await rp.accountAction("a1", "active");
@@ -68,7 +69,7 @@ describe("活跃上报 API 客户端", () => {
     const [url, init] = call(fetchMock);
     expect(url).toBe("http://127.0.0.1:8787/admin/api/accounts/a1/actions/active");
     expect(init.method).toBe("POST");
-    expect(init.headers).toMatchObject({ "X-Admin-Token": TOKEN });
+    expect(init.headers).toMatchObject({ "X-Proxy-Host-Token": TOKEN });
     // 动作接口不带 body，全部语义在路径里。
     expect(init.body).toBeUndefined();
   });

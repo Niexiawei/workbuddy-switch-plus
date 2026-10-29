@@ -398,7 +398,7 @@ v1 D2 的「webui 经 BFF 连本机桌面端」**作废**。理由不是「转�
 
 **验收**：✅ 本文定稿；`docs/reverse-proxy-rust-migration-plan.md` 顶部加了一行指向本文。
 
-### I1 后端并入与自动启动（2–3 天）
+### I1 后端并入与自动启动（✅ 已完成，2026-10-29，commit `ee0b46c`）
 - 删 `bin/wb-proxy.rs`；新增 `src-tauri/src/proxy_service.rs`（替换 `proxy_engine.rs`）。
 - `setup` 里 autostart（排除截图演示模式）；`RunEvent::Exit` 优雅停机（2s 超时）。
 - **端口策略**（本文 §3.1.1）：期望端口读取顺序 `WB_SERVE_PORT` → `state.json` → **8787**；`EADDRINUSE` 时 +1 重试，最多 20 次；状态回 `desiredPort` / `actualPort` / `portShifted`。
@@ -416,7 +416,7 @@ v1 D2 的「webui 经 BFF 连本机桌面端」**作废**。理由不是「转�
 - 关闭桌面端 → 端口释放（`Test-NetConnection` 验证，无残留）；
 - `curl 127.0.0.1:<port>/v1/usage` 返回与 Python 同字段的快照。
 
-### I2 前端路由与二级菜单（2 天）
+### I2 前端路由与二级菜单（✅ 已完成，2026-10-29）
 - 新建 `src/pages/reverse-proxy/*` 薄壳页 + `ReverseProxyLayout`（含菜单、计数徽标、服务状态条）。
 - `App.tsx`：路由表 + 可展开的「反代服务」+ 「高级」分组（本次只有「连接测试 / 审计」两项可见）；抽 `SidebarNavItem`。
 - 删除 `src/lib/proxy-engine.ts`；`ReverseProxyPage.tsx` 的 `NAV` / `Tabs` 骨架退役。
@@ -424,7 +424,7 @@ v1 D2 的「webui 经 BFF 连本机桌面端」**作废**。理由不是「转�
 
 **验收**：每个二级路由可直达、刷新不丢；`npx tsc --noEmit` 通过；面板渲染与旧页面逐页截图比对（除登录门与 Tab 栏外无差异）。
 
-### I3 鉴权改造与内置服务卡片（2 天）
+### I3 鉴权改造与内置服务卡片（✅ 已完成，2026-10-29）
 - `reverse-proxy.ts`：base 取 `actualPort`、token 走 invoke（本文 §3.3）；401 自动重取一次；清掉旧 localStorage 键。
 - 删除 `LoginCard` / `ConnectView` / `saveLogin` 在反代页的引用；移除全部跨源/手填地址逻辑。
 - `ServiceControl` 拆成 `BuiltinServiceCard`（状态 / 实际端口 / 期望端口 / 停机启停 / 端口冲突提示 / 局域网 / 数据目录）与保留给 old 的原件。

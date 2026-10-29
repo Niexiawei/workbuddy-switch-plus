@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes } from "react-router-dom";
-import { ArrowUp, Link2, Loader2, MessagesSquare, Play, Server, Settings, Sparkles, User } from "lucide-react";
+import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { ArrowUp, ChevronRight, Link2, Loader2, MessagesSquare, Play, Server, Settings, Sparkles, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
@@ -10,7 +10,27 @@ import SessionsPage from "@/pages/SessionsPage";
 import CreditStatsPage from "@/pages/CreditStatsPage";
 import TokenStatsPage from "@/pages/TokenStatsPage";
 import SettingsPage from "@/pages/SettingsPage";
-import ReverseProxyPage from "@/pages/ReverseProxyPage";
+import ReverseProxyLayout from "@/pages/reverse-proxy/ReverseProxyLayout";
+import OverviewPage from "@/pages/reverse-proxy/OverviewPage";
+import LogsPage from "@/pages/reverse-proxy/LogsPage";
+import RpAccountsPage from "@/pages/reverse-proxy/AccountsPage";
+import GroupsPage from "@/pages/reverse-proxy/GroupsPage";
+import EgressPage from "@/pages/reverse-proxy/EgressPage";
+import KeysPage from "@/pages/reverse-proxy/KeysPage";
+import CliPage from "@/pages/reverse-proxy/CliPage";
+import GuidePage from "@/pages/reverse-proxy/GuidePage";
+import ModelsPage from "@/pages/reverse-proxy/ModelsPage";
+import ServicePage from "@/pages/reverse-proxy/ServicePage";
+import AlertsPage from "@/pages/reverse-proxy/AlertsPage";
+import TokensPage from "@/pages/reverse-proxy/TokensPage";
+import UsersPage from "@/pages/reverse-proxy/UsersPage";
+import SecurityPage from "@/pages/reverse-proxy/SecurityPage";
+import AuditPage from "@/pages/reverse-proxy/AuditPage";
+import {
+  REVERSE_PROXY_DEFAULT_SEGMENT,
+  REVERSE_PROXY_NAV,
+} from "@/pages/reverse-proxy/nav";
+import { SidebarGroupLabel, SidebarNavItem, SidebarSubItem } from "@/components/sidebar-nav";
 import { StatusDot, AppIconMark } from "@/components/product-marks";
 import { CompanionDemoDialog } from "@/components/companion-demo-dialog";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
@@ -262,81 +282,13 @@ function Layout() {
             )}
           </div>
         </div>
-        <nav className="flex min-h-0 flex-1 flex-col gap-0.5" aria-label="主导航">
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
-                isActive
-                  ? "bg-foreground/[0.06] font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-              )
-            }
-          >
-            <User className="size-4" />
-            账号管理
-          </NavLink>
-          {sessionsNavEnabled && (
-            <NavLink
-              to="/sessions"
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
-                  isActive
-                    ? "bg-foreground/[0.06] font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-                )
-              }
-            >
-              <Link2 className="size-4" />
-              关联会话
-            </NavLink>
-          )}
-          <NavLink to="/token-stats" className={({ isActive }) => cn("flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors", isActive ? "bg-foreground/[0.06] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}><MessagesSquare className="size-4" />Token 统计</NavLink>
-          <NavLink
-            to="/credit-stats"
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
-                isActive
-                  ? "bg-foreground/[0.06] font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-              )
-            }
-          >
-            <Sparkles className="size-4" />
-            积分统计
-          </NavLink>
-          <NavLink
-            to="/reverse-proxy"
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
-                isActive
-                  ? "bg-foreground/[0.06] font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-              )
-            }
-          >
-            <Server className="size-4" />
-            反代服务
-          </NavLink>
-          <NavLink
-            to="/settings"
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
-                isActive
-                  ? "bg-foreground/[0.06] font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-              )
-            }
-          >
-            <Settings className="size-4" />
-            设置
-          </NavLink>
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto" aria-label="主导航">
+          <SidebarNavItem to="/" icon={User} label="账号管理" end />
+          {sessionsNavEnabled && <SidebarNavItem to="/sessions" icon={Link2} label="关联会话" />}
+          <SidebarNavItem to="/token-stats" icon={MessagesSquare} label="Token 统计" />
+          <SidebarNavItem to="/credit-stats" icon={Sparkles} label="积分统计" />
+          <ReverseProxyNav />
+          <SidebarNavItem to="/settings" icon={Settings} label="设置" />
         </nav>
         {api.isWebui() && !demoModeEnabled ? null : <UpdateCenter running={running} />}
       </aside>
@@ -348,6 +300,72 @@ function Layout() {
       >
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/**
+ * 「反代服务」的二级菜单。
+ *
+ * 展开状态跟着当前路由走：只要 URL 在 `/reverse-proxy/*` 下就展开，离开也不强制
+ * 收起（用户可能是先点开菜单再看别处）。额外的开合状态只存在组件内，
+ * 不落 localStorage——它是一个纯粹的当下动作，不值得跨会话记住。
+ */
+function ReverseProxyNav() {
+  const location = useLocation();
+  const inside = location.pathname.startsWith("/reverse-proxy");
+  const [open, setOpen] = useState(inside);
+  // 从别处跳进反代页（比如概览里的「查看接入指南」）时要自动展开，
+  // 否则菜单停在收起状态，用户看不出自己在哪一级。
+  useEffect(() => {
+    if (inside) setOpen(true);
+  }, [inside]);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className={cn(
+          "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+          inside
+            ? "bg-foreground/[0.06] font-medium text-foreground"
+            : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
+        )}
+      >
+        <Server className="size-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-left">反代服务</span>
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+      {open ? (
+        <div className="mt-0.5 flex flex-col gap-0.5">
+          {REVERSE_PROXY_NAV.map((group, index) =>
+            group.title ? (
+              <div key={`group-${group.title}`}>
+                <SidebarGroupLabel>{group.title}</SidebarGroupLabel>
+                {group.items.map((item) => (
+                  <SidebarSubItem
+                    key={item.segment}
+                    to={`/reverse-proxy/${item.segment}`}
+                    label={item.label}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div key={`group-${index}`} className="flex flex-col gap-0.5">
+                {group.items.map((item) => (
+                  <SidebarSubItem
+                    key={item.segment}
+                    to={`/reverse-proxy/${item.segment}`}
+                    label={item.label}
+                  />
+                ))}
+              </div>
+            ),
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -364,7 +382,29 @@ export default function App() {
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/credit-stats" element={<CreditStatsPage />} />
             <Route path="/token-stats" element={<TokenStatsPage />} />
-            <Route path="/reverse-proxy" element={<ReverseProxyPage />} />
+            {/*
+              反代服务：布局 + 子路由。默认段给个重定向，免得 `/reverse-proxy`
+              落在一个空布局上。`/reverse-proxy-old`（Python 版）在下一阶段接入。
+            */}
+            <Route path="/reverse-proxy" element={<ReverseProxyLayout />}>
+              <Route index element={<Navigate to={REVERSE_PROXY_DEFAULT_SEGMENT} replace />} />
+              <Route path="overview" element={<OverviewPage />} />
+              <Route path="logs" element={<LogsPage />} />
+              <Route path="accounts" element={<RpAccountsPage />} />
+              <Route path="groups" element={<GroupsPage />} />
+              <Route path="egress" element={<EgressPage />} />
+              <Route path="keys" element={<KeysPage />} />
+              <Route path="cli" element={<CliPage />} />
+              <Route path="guide" element={<GuidePage />} />
+              <Route path="models" element={<ModelsPage />} />
+              <Route path="service" element={<ServicePage />} />
+              <Route path="alerts" element={<AlertsPage />} />
+              <Route path="tokens" element={<TokensPage />} />
+              <Route path="users" element={<UsersPage />} />
+              <Route path="security" element={<SecurityPage />} />
+              <Route path="audit" element={<AuditPage />} />
+              <Route path="*" element={<Navigate to={REVERSE_PROXY_DEFAULT_SEGMENT} replace />} />
+            </Route>
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

@@ -1,14 +1,18 @@
 /**
  * 反代服务管理端 API 客户端（codebuddy2api + switch 账号库）。
  *
- * 与内置静态后台（/admin/）的差别：SPA 跨源调用 /admin/api/*，走
- * `X-Admin-Token` 头鉴权而不是 cookie（跨站 SameSite=strict cookie 不可用），
- * 因此服务端已开放 CORS 并支持头令牌。base URL 与令牌存 localStorage。
+ * **地址与凭据都由宿主提供，不落 localStorage：**
+ *   · 地址来自 `proxy_service_status` 的 `baseUrl`（端口可能因占用而 +1）；
+ *   · 凭据是桌面端进程内存里的宿主令牌，每次请求前经 `proxy_admin_token` 取。
+ *
+ * 这样做的原因见 `docs/reverse-proxy-integration-plan.md` §3.3：桌面端用户已经
+ * 登录过主程序，不该在控制台再输一次密码；而 localStorage 里留明文令牌，
+ * 等于把管理面凭据交给任何能在这台机器上开 devtools 的人。
  */
 
-const BASE_KEY = "wb.rp.base";
-const TOKEN_KEY = "wb.rp.token";
 const USER_KEY = "wb.rp.user";
+
+/** 尚未拿到宿主状态时的兜底地址（仅用于极端情况下的错误提示，不参与请求）。 */
 export const DEFAULT_BASE = "http://127.0.0.1:8787";
 
 export class RpError extends Error {
@@ -37,25 +41,56 @@ function write(key: string, value: string | null): void {
   }
 }
 
-let memBase = "";
-let memToken = "";
+/**
+ * 当前服务地址与宿主令牌。
+ *
+ * 两者都由桌面端注入（见 `proxy-service.ts`），页面自身不再读写 localStorage。
+ * 用一个可替换的「provider」而不是直接 import invoke，是为了让 `reverse-proxy.test.ts`
+ * 能在 node 环境下跑：测试替换成固定值即可断言请求打到了哪里。
+ */
+type HostProvider = {
+  base: () => string;
+  token: () => Promise<string> | string;
+};
+
+let host: HostProvider = {
+  base: () => DEFAULT_BASE,
+  token: () => "",
+};
+
+/** 由布局层在拿到 `proxy_service_status` 后调用。传 null 表示回到未连接状态。 */
+export function setHostProvider(next: HostProvider | null): void {
+  host = next ?? { base: () => DEFAULT_BASE, token: () => "" };
+}
 
 export function getBaseUrl(): string {
-  return read(BASE_KEY) || memBase || DEFAULT_BASE;
+  return host.base().replace(/\/+$/, "");
 }
 
+/**
+ * 兼容旧调用点：只影响「地址」的那部分（跳过登录门、指向另一台服务）。
+ *
+ * 新代码不该用它——内置服务的地址由宿主决定，前端硬改只会指向一个没人监听
+ * 的端口。保留导出只是为了让还没迁完的调用方不至于编译失败。
+ */
 export function setBaseUrl(value: string): void {
-  memBase = value.trim().replace(/\/+$/, "");
-  write(BASE_KEY, memBase);
+  const base = value.trim().replace(/\/+$/, "");
+  host = { ...host, base: () => base };
 }
 
-export function getToken(): string {
-  return read(TOKEN_KEY) || memToken;
+/** 宿主令牌。异步，因为桌面端要经 IPC 取。 */
+export function getToken(): Promise<string> {
+  return Promise.resolve(host.token());
 }
 
-export function setToken(value: string | null): void {
-  memToken = value ?? "";
-  write(TOKEN_KEY, value);
+/**
+ * 兼容旧调用点：单令牌形态下没有「设置令牌」这回事。
+ *
+ * 桌面端令牌由宿主持有，页面既不该缓存也不该续期，所以这里只保留签名，
+ * 调用它等价于「忘掉本地缓存的值」。
+ */
+export function setToken(_value: string | null): void {
+  /* 令牌由宿主持有，页面不存；保留函数是为了让旧调用点逐步退场 */
 }
 
 export function getSessionUser(): RpSession | null {
@@ -72,21 +107,39 @@ export function setSessionUser(value: RpSession | null): void {
   write(USER_KEY, value ? JSON.stringify(value) : null);
 }
 
+/**
+ * 发一次管理面请求。
+ *
+ * `X-Proxy-Host-Token` 是 Rust 管理面认的宿主凭据（`crates/wb-switch-proxy/src/hostauth.rs`）；
+ * 401 时自动重取一次——令牌在宿主那边可能已经换过（换了端口会重新生成）。
+ */
 async function request<T>(path: string, options: { method?: string; body?: unknown; auth?: boolean } = {}): Promise<T> {
   const method = options.method ?? "GET";
-  const token = getToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (options.auth !== false && token) headers["X-Admin-Token"] = token;
-  let response: Response;
-  try {
-    response = await fetch(getBaseUrl() + "/admin/api/" + path.replace(/^\/+/, ""), {
+  const url = getBaseUrl() + "/admin/api/" + path.replace(/^\/+/, "");
+  const send = async (token: string): Promise<Response> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (options.auth !== false && token) headers["X-Proxy-Host-Token"] = token;
+    return fetch(url, {
       method,
       headers,
       credentials: "omit",
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
+  };
+
+  let response: Response;
+  try {
+    response = await send(await getToken());
   } catch {
     throw new RpError("无法连接反代服务，请确认它已启动且地址正确", 0);
+  }
+  if (response.status === 401 && options.auth !== false) {
+    // 令牌可能过期/换过：重取一次再试。仍 401 才如实报错，避免无限重试。
+    try {
+      response = await send(await getToken());
+    } catch {
+      throw new RpError("无法连接反代服务，请确认它已启动且地址正确", 0);
+    }
   }
   let data: unknown = null;
   try {

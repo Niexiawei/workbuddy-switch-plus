@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 
-import { rp, type RpAccount } from "./reverse-proxy";
+import { rp, type RpAccount, setHostProvider } from "./reverse-proxy";
 
 /**
  * 账号限速（流量整形）的前端契约。
@@ -55,8 +55,9 @@ describe("账号限速", () => {
     stubLocalStorage();
     // 真实的存储键是 `wb.rp.*`（见 reverse-proxy.ts 的 BASE_KEY / TOKEN_KEY）。
     // 写错键的后果是请求静默不带令牌 —— 401 而不是报错，很容易被当成后端问题。
-    localStorage.setItem("wb.rp.base", "http://127.0.0.1:8787");
-    localStorage.setItem("wb.rp.token", TOKEN);
+    // 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
+    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -88,7 +89,7 @@ describe("账号限速", () => {
   it("带鉴权头", async () => {
     let seen = "";
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
-      seen = String(new Headers(init?.headers).get("X-Admin-Token") ?? "");
+      seen = String(new Headers(init?.headers).get("X-Proxy-Host-Token") ?? "");
       return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
     });
     await rp.setAccountLimits("acc-1", { weight: 1, max_concurrency: 0, min_interval: 0 });

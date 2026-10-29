@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 
-import { rp } from "./reverse-proxy";
+import { rp, setHostProvider } from "./reverse-proxy";
 import { logTps } from "@/components/reverse-proxy/request-log-panel";
 
 /**
@@ -42,8 +42,9 @@ function stubFetch(calls: Call[], reply: unknown = { ok: true }) {
 
 beforeEach(() => {
   stubLocalStorage();
-  localStorage.setItem("wb.rp.base", "http://127.0.0.1:8787");
-  localStorage.setItem("wb.rp.token", TOKEN);
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
+    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -131,7 +132,7 @@ describe("审计日志", () => {
     const calls: Call[] = [];
     stubFetch(calls, []);
     await rp.auditLogs();
-    expect(calls[0].headers.get("X-Admin-Token")).toBe(TOKEN);
+    expect(calls[0].headers.get("X-Proxy-Host-Token")).toBe(TOKEN);
   });
 });
 
