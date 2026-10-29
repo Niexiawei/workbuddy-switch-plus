@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, MailCheck, Save } from "lucide-react";
+import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 
 import { Banner, PanelHeader } from "@/components/reverse-proxy/rp-shared";
@@ -65,7 +65,6 @@ export function AlertsPanel() {
   const [cfg, setCfg] = useState<RpAlerts | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   /** 用户是否动过口令框。没动过就不提交这个键。 */
   const [passwordTouched, setPasswordTouched] = useState(false);
   const [error, setError] = useState("");
@@ -108,21 +107,6 @@ export function AlertsPanel() {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function sendTest() {
-    setTesting(true);
-    setError("");
-    try {
-      const res = await rp.testAlerts();
-      toast.success(res.message || "测试邮件已发送");
-    } catch (cause) {
-      // 把真实原因透出来：SMTP 报错文案（认证失败 / 连不上）本身就是排查线索，
-      // 包成「发送失败」等于让人去猜。
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setTesting(false);
     }
   }
 
@@ -345,16 +329,14 @@ export function AlertsPanel() {
       </section>
 
       <div className="flex items-center justify-between gap-3">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={testing || !cfg.host || !cfg.to}
-          onClick={() => void sendTest()}
-          title={!cfg.host || !cfg.to ? "先填写 SMTP 服务器与收件地址" : undefined}
-        >
-          {testing ? <Loader2 className="size-3.5 animate-spin" /> : <MailCheck className="size-3.5" />}
-          {testing ? "发送中…" : "发送测试邮件"}
-        </Button>
+        {/*
+          测试邮件在内置服务（Rust）下仍是 501 —— SMTP 客户端还没迁。
+          按「不摆点了会报错的按钮」的约定，这里直接不给按钮，改为指路。
+          告警配置本身仍然可保存：只是暂时没法自证发得出去。
+        */}
+        <span className="text-[11px] leading-4 text-muted-foreground">
+          测试邮件需要 SMTP 客户端，内置服务暂未支持；请到「反代服务old」里发送。
+        </span>
         <Button size="sm" disabled={saving} onClick={() => void save()}>
           {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
           {saving ? "保存中…" : "保存"}
@@ -362,7 +344,7 @@ export function AlertsPanel() {
       </div>
 
       <p className="text-[11px] leading-4 text-muted-foreground">
-        测试邮件是配置类功能唯一可靠的自证方式 —— 否则只能等下一次真告警才知道
+        配置类功能最可靠的自证方式是发一封测试邮件 —— 否则只能等下一次真告警才知道
         「原来没配通」，而那时候问题已经发生了。
       </p>
     </div>

@@ -106,7 +106,7 @@ async fn health(
             "admin": true,
             "auth": true,
             "usage": true,
-            "ipAllowlist": false,
+            "ipAllowlist": true,
         },
     }))
 }
@@ -119,10 +119,12 @@ async fn gateway_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -
 async fn chat_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let peer = crate::hostauth::peer_from_connect(connect);
     let model = payload.get("model").and_then(Value::as_str);
-    let key = match crate::keys::authenticate(&state.store, &headers, model) {
+    let key = match crate::keys::authenticate(&state.store, &headers, model, peer) {
         Ok(key) => key,
         Err(response) => return response,
     };
@@ -133,9 +135,11 @@ async fn chat_handler(
 async fn messages_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str)) {
+    let peer = crate::hostauth::peer_from_connect(connect);
+    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str), peer) {
         Ok(key) => key,
         Err(response) => return response,
     };
@@ -172,9 +176,11 @@ async fn messages_handler(
 async fn responses_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str)) {
+    let peer = crate::hostauth::peer_from_connect(connect);
+    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str), peer) {
         Ok(key) => key,
         Err(response) => return response,
     };
@@ -231,8 +237,13 @@ fn incoming_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     profile::lower_headers(pairs.iter().map(|(key, value)| (key.as_str(), value.as_str())))
 }
 
-async fn models(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(response) = crate::keys::authenticate(&state.store, &headers, None) {
+async fn models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
+) -> Response {
+    let peer = crate::hostauth::peer_from_connect(connect);
+    if let Err(response) = crate::keys::authenticate(&state.store, &headers, None, peer) {
         return response;
     }
     Json(json!({ "object": "list", "data": catalog::load(&state).await })).into_response()

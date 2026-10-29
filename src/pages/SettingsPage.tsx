@@ -33,7 +33,12 @@ import { TimePicker } from "@/components/ui/time-picker";
 import { displayName } from "@/lib/account-display";
 import * as api from "@/lib/api";
 import { canPersistErrorLog } from "@/lib/error-report";
-import { setSessionsNavEnabled, useSessionsNavEnabled } from "@/lib/nav-prefs";
+import {
+  setLegacyProxyNavEnabled,
+  setSessionsNavEnabled,
+  useLegacyProxyNavEnabled,
+  useSessionsNavEnabled,
+} from "@/lib/nav-prefs";
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
 import { SUPPORTED_TOOLS, setToolEnabled, useSupportedTools, type ToolId } from "@/lib/supported-tools";
 import type {
@@ -2001,6 +2006,7 @@ function ErrorLogCard() {
 function AppearanceCard() {
   const [theme, setTheme] = useState<ThemePreference>(getThemePreference);
   const sessionsNavEnabled = useSessionsNavEnabled();
+  const legacyProxyNavEnabled = useLegacyProxyNavEnabled();
 
   function onThemeChange(value: string) {
     if (value !== "system" && value !== "light" && value !== "dark") return;
@@ -2041,6 +2047,19 @@ function AppearanceCard() {
             checked={sessionsNavEnabled}
             onCheckedChange={(on) => setSessionsNavEnabled(on)}
             aria-label="显示关联会话菜单"
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          className="border-b-0"
+          label="显示反代服务old 菜单"
+          description="上一代的 Python 独立服务，只作回滚通道。关闭后隐藏入口，页面仍可经地址直达"
+          htmlFor="appearance-legacy-proxy-nav"
+        >
+          <Switch
+            id="appearance-legacy-proxy-nav"
+            checked={legacyProxyNavEnabled}
+            onCheckedChange={(on) => setLegacyProxyNavEnabled(on)}
+            aria-label="显示反代服务old 菜单"
           />
         </SettingsFieldRow>
       </CardContent>

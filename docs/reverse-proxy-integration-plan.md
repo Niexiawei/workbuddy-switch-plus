@@ -436,14 +436,14 @@ v1 D2 的「webui 经 BFF 连本机桌面端」**作废**。理由不是「转�
 - 手动占用 8787 → 首次启动出现一次 `toast.warning`，状态条与所有 base URL 显示实际端口；
 - `reverse-proxy.test.ts` 32 例全绿（改动过的断言有注释说明原因）；`npm test` 全绿。
 
-### I4 页签取舍与 501 清理（1 天）
+### I4 页签取舍与 501 清理（✅ 已完成，2026-10-29）
 - 按本文 §3.5：保留「连接测试」「审计」，隐藏「IP 安全」「后台账号」「管理令牌」。
 - 隐藏 `KeysPanel` 的「导出密钥」与 `AlertsPanel` 的「发送测试邮件」两个 501 按钮，改成「去『反代服务old』操作」说明。
 - 连接测试按钮：首次点击弹二次确认「会真实消耗额度」。
 
 **验收**：内置页面里**任意按钮被点击都不会返回 501**（清单逐条点，清单进 docs）。
 
-### I5 「反代服务old」（1 天）
+### I5 「反代服务old」（✅ 已完成，2026-10-29）
 - 新建 `LegacyReverseProxyPage.tsx`（= 现 `ReverseProxyPage` 的 Python 分支 + `ServiceControl` + `AddAccountDialog` / `BatchScanDialog`）。
 - 引擎切换器删除；`/reverse-proxy-old` 路由 + 侧边栏项 + `nav-prefs` 开关。
 - old 的默认 base 改为 `8788`，页面显著位置显示真实地址与「回滚通道」说明。

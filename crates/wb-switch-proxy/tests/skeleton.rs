@@ -86,8 +86,8 @@ async fn health_reports_capabilities_and_peer() {
     assert_eq!(body["capabilities"]["chat"], json!(true));
     assert_eq!(body["capabilities"]["admin"], json!(true));
     assert_eq!(body["capabilities"]["usage"], json!(true));
-    // 白名单仍未执行，能力声明不能撒谎。
-    assert_eq!(body["capabilities"]["ipAllowlist"], json!(false));
+    // IP 白名单已在 keys::ip_allowed 里执行（I4），能力声明同步为 true。
+    assert_eq!(body["capabilities"]["ipAllowlist"], json!(true));
     assert_eq!(body["stateWritable"], json!(false), "只读实例应如实报告不可写");
     assert_eq!(body["hostAuth"], json!(false));
     assert_eq!(body["peerIsLoopback"], json!(true));

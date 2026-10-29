@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
-import { ArrowUp, ChevronRight, Link2, Loader2, MessagesSquare, Play, Server, Settings, Sparkles, User } from "lucide-react";
+import { ArrowUp, ChevronRight, History, Link2, Loader2, MessagesSquare, Play, Server, Settings, Sparkles, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
@@ -26,6 +26,7 @@ import TokensPage from "@/pages/reverse-proxy/TokensPage";
 import UsersPage from "@/pages/reverse-proxy/UsersPage";
 import SecurityPage from "@/pages/reverse-proxy/SecurityPage";
 import AuditPage from "@/pages/reverse-proxy/AuditPage";
+import LegacyReverseProxyPage from "@/pages/reverse-proxy/legacy/LegacyReverseProxyPage";
 import {
   REVERSE_PROXY_DEFAULT_SEGMENT,
   REVERSE_PROXY_NAV,
@@ -42,7 +43,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import companionTrayIcon from "@/assets/agent-companion-tray.png";
 import { DEMO_UNAVAILABLE_MESSAGE, demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
-import { useSessionsNavEnabled } from "@/lib/nav-prefs";
+import { useLegacyProxyNavEnabled, useSessionsNavEnabled } from "@/lib/nav-prefs";
 import { changeCompanionEnabled, useCompanionEnabled } from "@/lib/use-companion-enabled";
 import { useCreditAutoRefresh } from "@/lib/use-credit-auto-refresh";
 import { useRotateDeferredNotice } from "@/lib/use-rotate-deferred-notice";
@@ -244,6 +245,7 @@ function Layout() {
   const hasUnifiedTitleBar =
     api.isDesktop() && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
   const sessionsNavEnabled = useSessionsNavEnabled();
+  const legacyProxyNavEnabled = useLegacyProxyNavEnabled();
   useCreditAutoRefresh();
   useWorkbuddyStatusRefresh();
   useRotateDeferredNotice();
@@ -288,6 +290,7 @@ function Layout() {
           <SidebarNavItem to="/token-stats" icon={MessagesSquare} label="Token 统计" />
           <SidebarNavItem to="/credit-stats" icon={Sparkles} label="积分统计" />
           <ReverseProxyNav />
+          {legacyProxyNavEnabled && <SidebarNavItem to="/reverse-proxy-old" icon={History} label="反代服务old" />}
           <SidebarNavItem to="/settings" icon={Settings} label="设置" />
         </nav>
         {api.isWebui() && !demoModeEnabled ? null : <UpdateCenter running={running} />}
@@ -384,7 +387,7 @@ export default function App() {
             <Route path="/token-stats" element={<TokenStatsPage />} />
             {/*
               反代服务：布局 + 子路由。默认段给个重定向，免得 `/reverse-proxy`
-              落在一个空布局上。`/reverse-proxy-old`（Python 版）在下一阶段接入。
+              落在一个空布局上。Python 版另走 `/reverse-proxy-old`。
             */}
             <Route path="/reverse-proxy" element={<ReverseProxyLayout />}>
               <Route index element={<Navigate to={REVERSE_PROXY_DEFAULT_SEGMENT} replace />} />
@@ -405,6 +408,8 @@ export default function App() {
               <Route path="audit" element={<AuditPage />} />
               <Route path="*" element={<Navigate to={REVERSE_PROXY_DEFAULT_SEGMENT} replace />} />
             </Route>
+            {/* Python 版（回滚通道）：独立入口，与内置服务互斥，见 LegacyReverseProxyPage。 */}
+            <Route path="/reverse-proxy-old" element={<LegacyReverseProxyPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

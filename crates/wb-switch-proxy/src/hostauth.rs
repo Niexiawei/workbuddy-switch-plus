@@ -109,6 +109,17 @@ pub fn peer_ip(addr: Option<SocketAddr>) -> Option<IpAddr> {
     addr.map(|value| value.ip())
 }
 
+/// axum `ConnectInfo` 版本：数据面 handler 以 extractor 形式拿到它，
+/// 这里统一拆出 IP，避免每个 handler 都写一遍 `.map(|ConnectInfo(addr)| addr.ip())`。
+///
+/// 用 `Option<ConnectInfo<..>>` 而不是裸的 `ConnectInfo`：路由单测走
+/// `Router::oneshot` 时不经过真实监听，没有连接信息可注入，裸 extractor 会直接 500。
+pub fn peer_from_connect(
+    connect: Option<axum::extract::ConnectInfo<SocketAddr>>,
+) -> Option<IpAddr> {
+    peer_ip(connect.map(|axum::extract::ConnectInfo(addr)| addr))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
