@@ -760,6 +760,11 @@ export const rp = {
     request<RpKey>(`keys/${id}`, { method: "PATCH", body }),
   resetKeyUsage: (id: string) => request<{ ok: boolean }>(`keys/${id}/reset-usage`, { method: "POST" }),
   deleteKey: (id: string) => request<{ ok: boolean }>(`keys/${id}`, { method: "DELETE" }),
+  /** CLI 专用密钥：幂等取回（必要时服务端创建）；realm 固定 cn。 */
+  cliKey: () => request<{ id: string; key: string; created: boolean; realm: string }>("cli/key"),
+  rotateCliKey: () =>
+    request<{ id: string; key: string; created: boolean; realm: string }>("cli/key/rotate", { method: "POST" }),
+  revokeCliKey: () => request<{ ok: boolean; revoked: number }>("cli/key", { method: "DELETE" }),
   checkModels: (models: string[]) => request<{ checked: boolean; unknown: string[] }>("keys/check-models", { method: "POST", body: { models } }),
 
   listTokens: () => request<RpToken[]>("tokens"),

@@ -778,7 +778,27 @@ export interface CodeBuddyCliStatus {
   /** 当前 CLI 账号所属档位；尚未接入时缺省。 */
   activeAccountVariant?: WbVariant | null;
   accountCount: number;
+  /** 反代模式状态；旧后端没有这个字段，按「未开启」处理。 */
+  proxy?: CodeBuddyCliProxyState;
   statePath: string;
+}
+
+/** 反代模式下 CLI 指向哪里；`tokenHint` 只是脱敏摘要，不是密钥本身。 */
+export interface CodeBuddyCliProxyState {
+  enabled: boolean;
+  baseUrl: string | null;
+  tokenHint: string | null;
+  enabledAt?: number | null;
+}
+
+export interface CodeBuddyCliProxyResult {
+  ok: boolean;
+  configured?: boolean;
+  authMode?: "settings-env" | "api-key-helper" | "proxy";
+  proxy?: CodeBuddyCliProxyState;
+  settingsPath?: string;
+  message?: string;
+  error?: string;
 }
 
 export interface CodeBuddyCliSwitchResult {

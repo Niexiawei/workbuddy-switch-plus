@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Banner, CodeBlock, CopyButton, ToneBadge } from "@/components/reverse-proxy/rp-shared";
 import { getBaseUrl } from "@/lib/reverse-proxy";
 import {
-  adoptBaseUrl, serviceOpenDataDir, serviceRestartWithHost, serviceRestartWithPort, serviceSetExe, serviceStart,
-  serviceStatus, serviceStop, serviceStopElevated, serviceSupported,
+  adoptBaseUrl, serviceOpenDataDir, serviceRestartWithHost, serviceRestartWithPort, serviceSetExe, serviceStopElevated,
+  serviceSupported,
   type RpServiceStatus,
 } from "@/lib/reverse-proxy-service";
+import { engineStart, engineStatus, engineStop, getEngine } from "@/lib/proxy-engine";
 
 /**
  * 反代服务的进程控制台。
@@ -19,6 +20,7 @@ import {
  */
 export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
   const supported = serviceSupported();
+  const rustEngine = getEngine() === "rust";
   const [status, setStatus] = useState<RpServiceStatus | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "elevate" | "exe" | "open" | "refresh" | "lan" | "port">("");
   const [error, setError] = useState("");
@@ -43,7 +45,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     if (!supported) return;
     if (!quiet) setBusy("refresh");
     try {
-      apply(await serviceStatus());
+      apply(await engineStatus());
       if (!quiet) setError("");
     } catch (cause) {
       if (!quiet) setError(cause instanceof Error ? cause.message : String(cause));
@@ -70,7 +72,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     setBusy("start");
     setError("");
     try {
-      const next = await serviceStart(status?.port);
+      const next = await engineStart(getEngine(), status?.port);
       adoptBaseUrl(next);
       apply(next);
       toast.success("反代服务已启动");
@@ -87,7 +89,7 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
     setBusy("stop");
     setError("");
     try {
-      apply(await serviceStop());
+      apply(await engineStop());
       setStopFailed(false);
       toast.success("反代服务已停止");
     } catch (cause) {
@@ -101,6 +103,10 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
   }
 
   async function stopElevated() {
+    if (getEngine() === "rust") {
+      toast.error("Rust 引擎由应用托管，不需要提权停止");
+      return;
+    }
     setBusy("elevate");
     setError("");
     try {
@@ -122,6 +128,10 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
    * 重启会短暂中断正在转发的请求 —— 提前用 toast 说清楚，别让用户以为服务崩了。
    */
   async function restartOnLan() {
+    if (rustEngine) {
+      toast.error("Rust 引擎由应用托管，不支持改监听地址；需要时用 --port 启动");
+      return;
+    }
     if (!window.confirm(
       "将以 0.0.0.0 重启反代服务，本机所在网络内的其他设备都能访问。\n\n" +
       "· 服务会短暂中断几秒，正在转发的请求会失败重试。\n" +
@@ -146,6 +156,10 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
 
   /** 改回只绑本机。同样要重启。 */
   async function restartOnLocalhost() {
+    if (rustEngine) {
+      toast.error("Rust 引擎由应用托管，不支持改监听地址");
+      return;
+    }
     setBusy("lan");
     setError("");
     try {
@@ -172,6 +186,10 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
    * 而且 1–1023 里有一堆系统服务，撞上一个就是起不来。
    */
   async function restartOnPort() {
+    if (rustEngine) {
+      toast.error("Rust 引擎端口由应用管理，暂不支持页面内改端口");
+      return;
+    }
     const next = Number(portDraft.trim());
     if (!Number.isFinite(next) || !Number.isInteger(next)) {
       setError("端口必须是整数");

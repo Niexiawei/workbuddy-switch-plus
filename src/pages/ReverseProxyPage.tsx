@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Activity, BookOpen, Boxes, KeyRound, LayoutDashboard, LogOut, MailWarning, Network, PlugZap, RefreshCw, ScrollText,
-  Server, Settings2, ShieldCheck, Ticket, Users, Layers,
+  Server, Settings2, ShieldCheck, Terminal, Ticket, Users, Layers,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -13,10 +13,12 @@ import {
   type RpOverview, type RpSession, type RpToken, type RpUser,
 } from "@/lib/reverse-proxy";
 import { saveLogin, savedLogin, serviceSupported, type RpSavedLogin } from "@/lib/reverse-proxy-service";
+import { getEngine, setEngine, type ProxyEngineMode } from "@/lib/proxy-engine";
 import { performSignOut, shouldAutoLogin } from "@/lib/sign-out";
 import { AddAccountDialog } from "@/components/reverse-proxy/add-account-dialog";
 import { BatchScanDialog } from "@/components/reverse-proxy/batch-scan-dialog";
 import { AccountsPanel } from "@/components/reverse-proxy/accounts-panel";
+import { CliLinkCard } from "@/components/reverse-proxy/cli-link-card";
 import { AlertsPanel } from "@/components/reverse-proxy/alerts-panel";
 import { AuditPanel } from "@/components/reverse-proxy/audit-panel";
 import { EgressPanel } from "@/components/reverse-proxy/egress-panel";
@@ -59,6 +61,8 @@ const NAV: { group: string; items: { value: string; label: string; icon: typeof 
     group: "接入",
     items: [
       { value: "keys", label: "API 密钥", icon: KeyRound },
+      // CLI 接入是「密钥」的下游动作：先有密钥，再把它写进 CLI 配置。
+      { value: "cli", label: "CodeBuddy CLI", icon: Terminal },
       { value: "guide", label: "接入指南", icon: BookOpen },
     ],
   },
@@ -200,6 +204,18 @@ export default function ReverseProxyPage() {
     });
   }
 
+  const [engine] = useState<ProxyEngineMode>(() => getEngine());
+
+  /**
+   * 切换引擎：两套实现各自有独立的会话与端口，切完必须重载页面，
+   * 否则会拿着 A 引擎的 admin token 去打 B 引擎。
+   */
+  function switchEngine(mode: ProxyEngineMode) {
+    if (mode === engine) return;
+    setEngine(mode);
+    window.location.reload();
+  }
+
   const counts = useMemo<Record<string, number | undefined>>(() => ({
     accounts: overview?.accounts.length,
     keys: overview?.keys.length,
@@ -226,6 +242,19 @@ export default function ReverseProxyPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-border/70 p-0.5" title="灰度期可切换引擎做对比">
+            {(["python", "rust"] as const).map((mode) => (
+              <Button
+                key={mode}
+                size="sm"
+                variant={engine === mode ? "default" : "ghost"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() => switchEngine(mode)}
+              >
+                {mode === "python" ? "Python" : "Rust"}
+              </Button>
+            ))}
+          </div>
           <ToneBadge tone={session.role === "admin" ? "ok" : "muted"}>
             <ShieldCheck className="size-3" />{session.username} · {session.role === "admin" ? "管理员" : "只读"}
           </ToneBadge>
@@ -304,6 +333,9 @@ export default function ReverseProxyPage() {
           </TabsContent>
           <TabsContent value="keys" className="mt-0">
             <KeysPanel overview={overview} reload={loadOverview} />
+          </TabsContent>
+          <TabsContent value="cli" className="mt-0">
+            <CliLinkCard />
           </TabsContent>
           <TabsContent value="models" className="mt-0">
             <ModelsUsagePanel />

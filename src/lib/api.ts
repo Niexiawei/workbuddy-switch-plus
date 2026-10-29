@@ -6,6 +6,7 @@ import type {
   AppStatus,
   AutoRotateConfig,
   CodeBuddyCliInstallResult,
+  CodeBuddyCliProxyResult,
   CodeBuddyCliStatus,
   CodeBuddyCliSwitchResult,
   CodeBuddyCnIdeStatus,
@@ -100,7 +101,7 @@ function requireCompanionDesktop(): void {
   if (!isDesktop()) throw new Error("Agent Companion 仅在桌面版中可用");
 }
 
-type Route = { method: "GET" | "POST"; path: string };
+type Route = { method: "GET" | "POST" | "DELETE"; path: string };
 
 /** Tauri command → HTTP 路由映射（webui 模式）。 */
 const ROUTES: Record<string, Route> = {
@@ -109,6 +110,8 @@ const ROUTES: Record<string, Route> = {
   get_codebuddy_cli_status: { method: "GET", path: "/api/codebuddy-cli/status" },
   install_codebuddy_cli_helper: { method: "POST", path: "/api/codebuddy-cli/install-helper" },
   switch_codebuddy_cli_account: { method: "POST", path: "/api/codebuddy-cli/switch" },
+  enable_codebuddy_cli_proxy: { method: "POST", path: "/api/codebuddy-cli/proxy" },
+  disable_codebuddy_cli_proxy: { method: "DELETE", path: "/api/codebuddy-cli/proxy" },
   get_codebuddy_cn_ide_status: { method: "GET", path: "/api/codebuddy-cn-ide/status" },
   switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
   detect_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/detect" },
@@ -312,6 +315,24 @@ export function switchCodebuddyCliAccount(
     });
   }
   return call("switch_codebuddy_cli_account", { accountId, closeRunningCli });
+}
+
+/**
+ * 开启反代模式：CLI 指向本机反代，凭据换成一枚可单独吊销的反代密钥。
+ *
+ * 只改 `~/.codebuddy/settings.json` 的环境变量，不动账号库。调用方应先把
+ * 用户引到反代页确认服务在跑；换号之后由反代服务在池内完成，CLI 不用重启。
+ */
+export function enableCodebuddyCliProxy(
+  baseUrl: string,
+  token: string,
+): Promise<CodeBuddyCliProxyResult> {
+  return call("enable_codebuddy_cli_proxy", { baseUrl, token });
+}
+
+/** 关闭反代模式：恢复直连认证（Windows 写回账号 token，其他平台交回 helper）。 */
+export function disableCodebuddyCliProxy(): Promise<CodeBuddyCliProxyResult> {
+  return call("disable_codebuddy_cli_proxy");
 }
 
 export function getCodebuddyCnIdeStatus(): Promise<CodeBuddyCnIdeStatus> {
