@@ -17,6 +17,8 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from core import upstream_errors
+
 from . import alerts
 from . import egress
 from . import groups
@@ -672,7 +674,7 @@ class AccountPool:
             self.store.save()
         return aid, False
 
-    def select(self, affinity_key=None, key=None):
+    def select(self, affinity_key=None, key=None, model=None):
         """挑一个账号；`key` 是发起请求的密钥，用来做分组约束（可为 None）。
 
         过滤顺序有讲究：**先按分组缩范围，再叠手动模式**。反过来会让
@@ -683,6 +685,9 @@ class AccountPool:
         allowed, routing_override = groups.resolve(self.store, key)
         with self.store.lock:
             candidates = [row for row in self.store.account_rows() if self.state(row) == "available"]
+            # 模型级冷却：同一个号换个模型还能用，所以不能整号冷却。
+            if model:
+                candidates = [row for row in candidates if not self.model_cooling(row["id"], model)]
             if allowed is not None:
                 candidates = [row for row in candidates if row["id"] in allowed]
                 if not candidates:
@@ -711,11 +716,42 @@ class AccountPool:
             item = self.store.data["accounts"][aid]
             return aid, self.store.manager_for(aid, item)
 
-    def record(self, aid, status=200):
+    def model_cooling(self, aid, model) -> bool:
+        """该账号在这个模型上是否处于冷却期（模型级，不影响同号其它模型）。"""
+        if not model:
+            return False
+        with self.store.lock:
+            status = (self.store.data.get("account_status") or {}).get(aid) or {}
+            entry = (status.get("model_cooldown") or {}).get(str(model)) or {}
+            return float(entry.get("until") or 0) > self.clock()
+
+    def record(self, aid, status=200, model=None, failure=None):
         with self.store.lock:
             if aid not in self.store.data["accounts"]:
                 return
             data = self.store.data["account_status"].setdefault(aid, {})
+            if failure is not None:
+                # 业务码分类的处置优先于「按 HTTP 状态猜」：
+                # 11102 / 11134 只该冷却该模型，11128 不该冷却任何东西。
+                now = self.clock()
+                if failure.account_cooldown:
+                    data["cooldown_until"] = max(float(data.get("cooldown_until") or 0),
+                                                 now + failure.account_cooldown)
+                if failure.model_cooldown and model:
+                    cooling = dict(data.get("model_cooldown") or {})
+                    cooling.update({k: v for k, v in cooling.items()
+                                    if float((v or {}).get("until") or 0) > now})
+                    cooling[str(model)] = {"until": now + failure.model_cooldown,
+                                           "reason": failure.kind,
+                                           "code": failure.code}
+                    data["model_cooldown"] = cooling
+                if failure.kind in ("auth", "quota", "rate_limit", "unavailable",
+                                    "incomplete_stream", "stream_timeout"):
+                    data["consecutive_fails"] = int(data.get("consecutive_fails") or 0) + 1
+                    data["last_fail_at"] = int(now)
+                data["last_error"] = (failure.message or "")[:200]
+                self.store.save()
+                return
             data["request_count"] = data.get("request_count", 0) + 1
             data["last_request"] = int(self.clock())
             # 连续失败计数：认输的号和偶发抖动的号要分开对待。
@@ -1950,7 +1986,7 @@ class PoolMiddleware:
                     return {"type": "http.request", "body": raw, "more_body": False}
                 return await original_receive()
             receive = replay_receive
-            aid, manager = self.pool.select(affinity_key, key=key)
+            aid, manager = self.pool.select(affinity_key, key=key, model=upstream_model or model)
             # 占一个在途名额。顺序是「换号 → 排队 → 兜底放行」：
             #
             # 1. 先换一个号试试。多数情况下换号就能占到，不必让用户等。
@@ -1961,7 +1997,7 @@ class PoolMiddleware:
             # 3. 排队也超时，跟着 select 的兜底走（挑欠账最少的号），
             #    宁可超一点也不要报「暂无可用账号」——那会让人以为服务挂了。
             if not self.pool.acquire(aid):
-                aid, manager = self.pool.select(affinity_key, key=key)
+                aid, manager = self.pool.select(affinity_key, key=key, model=upstream_model or model)
                 if not self.pool.acquire(aid):
                     for _ in range(GATE_RETRIES):
                         await asyncio.sleep(GATE_RETRY_DELAY)
@@ -1989,7 +2025,7 @@ class PoolMiddleware:
                 if granted is not None:
                     self.pool.release(granted)
                 self.pool.update(aid, cooldown_until=self.pool.clock()+300, last_error="凭据暂不可用，已冷却 5 分钟")
-                aid, manager = self.pool.select(affinity_key, key=key)
+                aid, manager = self.pool.select(affinity_key, key=key, model=upstream_model or model)
                 self.pool.acquire(aid)
                 granted = aid
                 egress_url = bind_egress(aid, manager)
@@ -2009,6 +2045,9 @@ class PoolMiddleware:
         token = REQUEST_CREDENTIAL.set(manager)
         egress_token = egress.REQUEST_EGRESS.set(egress_url)
         status = 200
+        # 失败分类素材：流内错误帧 / 非流式错误体里带的业务码与自报类型。
+        error_code = None
+        error_type = None
         buffer = b""
         tokens_used = 0
         credit_used = 0.0
@@ -2023,7 +2062,7 @@ class PoolMiddleware:
         # 上游要先建连、鉴权、跑完 prefill 才会吐出第一个 chunk，慢在这一段最容易被误判成"卡住"。
         first_token_ms = 0
         async def observe(message):
-            nonlocal status, buffer, tokens_used, credit_used, cached_used, first_token_ms
+            nonlocal status, buffer, tokens_used, credit_used, cached_used, first_token_ms, error_code, error_type
             if message["type"] == "http.response.start":
                 status = message["status"]
             if message["type"] == "http.response.body":
@@ -2042,6 +2081,12 @@ class PoolMiddleware:
                                 code = int(code)
                             if code in (401, 402, 403, 429):
                                 status = code
+                            elif isinstance(code, int) and code >= 1000:
+                                error_code = code
+                            kind = err.get("type") if isinstance(err, dict) else None
+                            if kind in ("incomplete_stream", "stream_timeout", "empty_response"):
+                                error_type = kind
+                                status = 502
                             t, c = _usage_of(obj)
                             if t:
                                 tokens_used = t
@@ -2057,6 +2102,15 @@ class PoolMiddleware:
                     if buffer and not buffer.startswith(b"data:"):
                         try:
                             obj = json.loads(buffer)
+                            err = obj.get("error") or {}
+                            code = err.get("code") if isinstance(err, dict) else None
+                            if isinstance(code, str) and code.isdigit():
+                                code = int(code)
+                            if isinstance(code, int) and code >= 1000:
+                                error_code = code
+                            kind = err.get("type") if isinstance(err, dict) else None
+                            if kind in ("incomplete_stream", "stream_timeout", "empty_response"):
+                                error_type = kind
                             t, c = _usage_of(obj)
                             if t:
                                 tokens_used = t
@@ -2100,7 +2154,7 @@ class PoolMiddleware:
                 if granted is not None:
                     self.pool.release(granted)
                     granted = None
-                aid, manager = self.pool.select(affinity_key, key=key)
+                aid, manager = self.pool.select(affinity_key, key=key, model=upstream_model or model)
                 self.pool.acquire(aid)
                 granted = aid
                 REQUEST_CREDENTIAL.set(manager)
@@ -2108,6 +2162,8 @@ class PoolMiddleware:
                 granted = None
                 break
             status = 200
+            error_code = None
+            error_type = None
             buffer = b""
             tokens_used = 0
             credit_used = 0.0
@@ -2122,7 +2178,12 @@ class PoolMiddleware:
             # 而并发上限的判断依赖 inflight 已经归位。
             if granted is not None:
                 self.pool.release(granted)
-            self.pool.record(aid, status)
+            failure = None
+            if status >= 400 or error_type:
+                failure = upstream_errors.classify(
+                    status if status != 599 else 502, "",
+                    code=error_code, error_type=error_type)
+            self.pool.record(aid, status, model=upstream_model or model, failure=failure)
             self.pool.log_request(aid, model, status, 200 <= status < 300,
                                   tokens_used, credit_used, (time.monotonic()-started)*1000,
                                   "success" if 200 <= status < 300 else "upstream_error",
