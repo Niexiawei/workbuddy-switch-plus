@@ -50,13 +50,25 @@ class SecretPathFollowsDataDirTest(unittest.TestCase):
     def tearDown(self):
         ss.set_runtime_data_root(None)
 
+    def assert_under(self, path, root, message=""):
+        """判断 path 是否落在 root 之下——按真实路径比，不比字符串前缀。
+
+        Windows 的临时目录可能是 8.3 短名（`C:\\Users\\NIEXIA~1\\…`），
+        而 `Path.resolve()` 会展开成长名。两边口径不一致时 startswith 会假红，
+        与本文件要锁的「密钥跟随数据目录」这条不变量无关。
+        """
+        try:
+            Path(path).resolve().relative_to(Path(root).resolve())
+        except ValueError:
+            self.fail(message or f"{path} 不在 {root} 之下")
+
     def test_secret_path_follows_explicit_data_dir(self):
         """⭐ 主断言：设了运行目录，密钥就落在那里。"""
         ss.set_runtime_data_root(self.tmp)
         p = ss._secret_path()
         self.assertEqual(p, self.tmp / "settings.key")
-        self.assertTrue(str(p).startswith(str(self.tmp)),
-                        "密钥跑到数据目录外面去了 —— 冻结后就会落进 %TEMP%")
+        self.assert_under(p, self.tmp,
+                          "密钥跑到数据目录外面去了 —— 冻结后就会落进 %TEMP%")
 
     def test_build_app_wires_it_up(self):
         """⭐ 端到端：真实入口 `build_app(--data X)` 必须接上。"""
@@ -64,8 +76,7 @@ class SecretPathFollowsDataDirTest(unittest.TestCase):
         serve.build_app(["--data", str(self.tmp),
                          "--accounts", str(self.tmp / "acc.json")])
         p = ss._secret_path()
-        self.assertTrue(str(p).startswith(str(self.tmp)),
-                        f"build_app 没把数据目录传给密钥路径，得到 {p}")
+        self.assert_under(p, self.tmp, f"build_app 没把数据目录传给密钥路径，得到 {p}")
 
     def test_key_cache_invalidated_on_dir_change(self):
         """⭐ 换目录后不能复用旧密钥 —— 复用了就还是解不开。"""
@@ -117,10 +128,15 @@ class SecretPathFollowsDataDirTest(unittest.TestCase):
         fake_file.write_text("", encoding="utf-8")
         # 旧逻辑等价于：
         old_style = fake_file.resolve().parents[1] / "data" / "settings.key"
-        self.assertTrue(str(old_style).startswith(str(fake_meipass)))
+        self.assert_under(old_style, fake_meipass)
         # 而新逻辑（设过运行目录后）不会跑到那儿：
         ss.set_runtime_data_root(self.tmp)
-        self.assertFalse(str(ss._secret_path()).startswith(str(fake_meipass)))
+        try:
+            ss._secret_path().resolve().relative_to(fake_meipass.resolve())
+        except ValueError:
+            pass
+        else:
+            self.fail(f"密钥落在了 _MEIPASS 下：{ss._secret_path()}")
 
 
 if __name__ == "__main__":
