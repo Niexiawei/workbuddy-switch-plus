@@ -1,0 +1,77 @@
+{
+  "name": "chat_error_11128",
+  "note": "上游 400 / code 11128：客户端应收到可读错误与 wb_kind",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": {
+      "authorization": "Bearer <redacted>",
+      "content-type": "application/json",
+      "accept": "application/json",
+      "user-agent": "CLI/2.177.1 CodeBuddy/2.177.1",
+      "x-product": "SaaS",
+      "x-ide-type": "CLI",
+      "x-ide-name": "CLI",
+      "x-ide-version": "2.177.1",
+      "x-requested-with": "XMLHttpRequest",
+      "x-codebuddy-request": "1",
+      "x-user-id": "anonymous"
+    },
+    "body": {
+      "model": "deepseek-v4-flash",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are an AI agent powered by Golden Harness.\nKeep this rule."
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "stream": false,
+      "stream_options": {
+        "include_usage": true
+      },
+      "max_tokens": 64,
+      "reasoning_effort": "high",
+      "reasoning_summary": "auto",
+      "cache_retention": "long",
+      "extra_vars": {
+        "harnessMetadata": "{\"schemaVersion\":1}",
+        "initiator": "user"
+      }
+    }
+  },
+  "upstream": {
+    "method": "POST",
+    "url": "https://copilot.tencent.com/v2/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "authorization": "Bearer <redacted>",
+      "x-user-id": "golden-uid",
+      "x-enterprise-id": "",
+      "x-tenant-id": "",
+      "x-domain": "www.codebuddy.cn",
+      "user-agent": "CLI/2.177.1 CodeBuddy/2.177.1",
+      "x-product": "SaaS",
+      "x-ide-type": "CLI",
+      "x-ide-name": "CLI",
+      "x-ide-version": "2.177.1",
+      "x-requested-with": "XMLHttpRequest",
+      "x-codebuddy-request": "1"
+    },
+    "body": "{\"messages\":[{\"role\":\"system\",\"content\":\"Keep this rule.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"model\":\"deepseek-v4-flash\",\"cache_retention\":\"long\",\"reasoning_summary\":\"auto\",\"extra_vars\":{\"harnessMetadata\":\"{\\\"schemaVersion\\\":1}\",\"initiator\":\"user\"},\"reasoning_effort\":\"high\",\"stream_options\":{\"include_usage\":true},\"max_tokens\":64}"
+  },
+  "upstream_response": {
+    "status": 400,
+    "body": "{\"code\": 11128, \"msg\": \"Illegal API invocation from an unapproved channel\"}"
+  },
+  "response": {
+    "status": 400,
+    "content_type": "application/json",
+    "body": "{\"detail\":{\"error\":{\"message\":\"Illegal API invocation from an unapproved channel\\n\\nCodeBuddy 拒绝了这次调用（渠道校验 11128）。换号或重试都没用，要改的是发出去的 system 提示措辞：见 core/cn_prompt.py 的 RESTATEMENTS。\",\"type\":\"bad_request\",\"code\":11128,\"wb_kind\":\"bad_request\"}}}",
+    "data_frames": []
+  }
+}

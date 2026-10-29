@@ -1,0 +1,80 @@
+{
+  "name": "chat_incomplete_stream",
+  "note": "上游没有终态帧：必须报 incomplete_stream，不能当成功",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": {
+      "authorization": "Bearer <redacted>",
+      "content-type": "application/json",
+      "accept": "application/json",
+      "user-agent": "CLI/2.177.1 CodeBuddy/2.177.1",
+      "x-product": "SaaS",
+      "x-ide-type": "CLI",
+      "x-ide-name": "CLI",
+      "x-ide-version": "2.177.1",
+      "x-requested-with": "XMLHttpRequest",
+      "x-codebuddy-request": "1",
+      "x-user-id": "anonymous"
+    },
+    "body": {
+      "model": "deepseek-v4-flash",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are an AI agent powered by Golden Harness.\nKeep this rule."
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "max_tokens": 64,
+      "reasoning_effort": "high",
+      "reasoning_summary": "auto",
+      "cache_retention": "long",
+      "extra_vars": {
+        "harnessMetadata": "{\"schemaVersion\":1}",
+        "initiator": "user"
+      }
+    }
+  },
+  "upstream": {
+    "method": "POST",
+    "url": "https://copilot.tencent.com/v2/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "authorization": "Bearer <redacted>",
+      "x-user-id": "golden-uid",
+      "x-enterprise-id": "",
+      "x-tenant-id": "",
+      "x-domain": "www.codebuddy.cn",
+      "user-agent": "CLI/2.177.1 CodeBuddy/2.177.1",
+      "x-product": "SaaS",
+      "x-ide-type": "CLI",
+      "x-ide-name": "CLI",
+      "x-ide-version": "2.177.1",
+      "x-requested-with": "XMLHttpRequest",
+      "x-codebuddy-request": "1"
+    },
+    "body": "{\"messages\":[{\"role\":\"system\",\"content\":\"Keep this rule.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"model\":\"deepseek-v4-flash\",\"cache_retention\":\"long\",\"reasoning_summary\":\"auto\",\"extra_vars\":{\"harnessMetadata\":\"{\\\"schemaVersion\\\":1}\",\"initiator\":\"user\"},\"reasoning_effort\":\"high\",\"stream_options\":{\"include_usage\":true},\"max_tokens\":64}"
+  },
+  "upstream_response": {
+    "status": 200,
+    "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\n"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\ndata: {\"error\": {\"message\": \"上游流在终态帧之前结束，回答不完整\", \"type\": \"incomplete_stream\", \"code\": 502, \"wb_kind\": \"incomplete_stream\"}}\n\n",
+    "data_frames": [
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}",
+      "data: {\"error\": {\"message\": \"上游流在终态帧之前结束，回答不完整\", \"type\": \"incomplete_stream\", \"code\": 502, \"wb_kind\": \"incomplete_stream\"}}"
+    ]
+  }
+}

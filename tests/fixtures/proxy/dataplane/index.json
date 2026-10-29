@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "name": "chat_cli",
+      "note": "CLI 流量：透传指纹头 + CLI 独有字段 + 11128 提示词改写"
+    },
+    {
+      "name": "chat_desktop",
+      "note": "桌面端流量：保持旧行为（桌面 UA、丢弃 CLI 字段）"
+    },
+    {
+      "name": "responses_stream",
+      "note": "Codex 的 /v1/responses：chat SSE → Responses SSE"
+    },
+    {
+      "name": "anthropic_stream",
+      "note": "Claude Code 的 /v1/messages：chat SSE → Anthropic SSE"
+    },
+    {
+      "name": "chat_error_11128",
+      "note": "上游 400 / code 11128：客户端应收到可读错误与 wb_kind"
+    },
+    {
+      "name": "chat_incomplete_stream",
+      "note": "上游没有终态帧：必须报 incomplete_stream，不能当成功"
+    }
+  ],
+  "generated_by": "reverse-proxy/tools/record_dataplane.py"
+}

@@ -1,0 +1,752 @@
+{
+  "generated_by": "reverse-proxy/tools/record_contract.py",
+  "source": "python reverse-proxy (pre-Rust)",
+  "route_count": 76,
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/admin/api/accounts",
+      "group": "accounts",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/accounts/credits-snapshot",
+      "group": "accounts",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/accounts/{aid}",
+      "group": "accounts",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/accounts/{aid}",
+      "group": "accounts",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/accounts/{aid}/actions/{action}",
+      "group": "accounts",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/api/accounts/{aid}/limits",
+      "group": "accounts",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/alerts",
+      "group": "alerts",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/api/alerts",
+      "group": "alerts",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/alerts/test",
+      "group": "alerts",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/audit-logs",
+      "group": "audit-logs",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/audit-logs/clear",
+      "group": "audit-logs",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/cli/key",
+      "group": "cli",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/cli/key",
+      "group": "cli",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/cli/key/rotate",
+      "group": "cli",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/usage",
+      "group": "data-plane",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/egress",
+      "group": "egress",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/egress/assign",
+      "group": "egress",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/egress/lines",
+      "group": "egress",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/egress/lines/{lid}",
+      "group": "egress",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/egress/lines/{lid}",
+      "group": "egress",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/groups",
+      "group": "groups",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/groups",
+      "group": "groups",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/groups/{gid}",
+      "group": "groups",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/groups/{gid}",
+      "group": "groups",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "group": "health",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/keys",
+      "group": "keys",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/keys/check-models",
+      "group": "keys",
+      "auth": "admin",
+      "body": true,
+      "risk": "read"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/keys/{kid}",
+      "group": "keys",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/keys/{kid}",
+      "group": "keys",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/keys/{kid}/export",
+      "group": "keys",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/keys/{kid}/reset-usage",
+      "group": "keys",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/login",
+      "group": "login",
+      "auth": "none",
+      "body": true,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/login-options",
+      "group": "login-options",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/logout",
+      "group": "logout",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/me",
+      "group": "me",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/model-aliases",
+      "group": "model-aliases",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/model-aliases",
+      "group": "model-aliases",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/models",
+      "group": "models",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/oauth/batch/start",
+      "group": "oauth",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/oauth/start",
+      "group": "oauth",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/oauth/{fid}",
+      "group": "oauth",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/oauth/{fid}/poll",
+      "group": "oauth",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/overview",
+      "group": "overview",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/pool/actions/{action}",
+      "group": "pool",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/pool/checkin-logs",
+      "group": "pool",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/pool/checkin-logs/clear",
+      "group": "pool",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/pool/checkin-logs/summary",
+      "group": "pool",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/pool/settings",
+      "group": "pool",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/pool/summary",
+      "group": "pool",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/request-logs",
+      "group": "request-logs",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/security/config",
+      "group": "security",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/security/config",
+      "group": "security",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/security/logs",
+      "group": "security",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/security/logs/clear",
+      "group": "security",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/security/rules",
+      "group": "security",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/security/rules",
+      "group": "security",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/security/rules/{rid}",
+      "group": "security",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/session",
+      "group": "session",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/sessions/revoke",
+      "group": "sessions",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/settings",
+      "group": "settings",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/api/settings",
+      "group": "settings",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "group": "static",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin",
+      "group": "static",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/",
+      "group": "static",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/assets/{filename}",
+      "group": "static",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/favicon.ico",
+      "group": "static",
+      "auth": "none",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/test",
+      "group": "test",
+      "auth": "admin",
+      "body": true,
+      "risk": "upstream-write"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/tokens",
+      "group": "tokens",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/tokens",
+      "group": "tokens",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/tokens/{tid}",
+      "group": "tokens",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/tokens/{tid}",
+      "group": "tokens",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/usage/stats",
+      "group": "usage",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/users",
+      "group": "users",
+      "auth": "admin",
+      "body": false,
+      "risk": "read"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/users",
+      "group": "users",
+      "auth": "admin",
+      "body": true,
+      "risk": "local-write"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/api/users/{username}",
+      "group": "users",
+      "auth": "admin",
+      "body": false,
+      "risk": "destructive"
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/api/users/{username}",
+      "group": "users",
+      "auth": "admin",
+      "body": true,
+      "risk": "destructive"
+    }
+  ],
+  "state_keys": [
+    {
+      "key": "keys",
+      "desc": "API 密钥（策略与用量）",
+      "owner": "keysvc"
+    },
+    {
+      "key": "users",
+      "desc": "后台账号（PBKDF2 口令）",
+      "owner": "security"
+    },
+    {
+      "key": "api_tokens",
+      "desc": "管理令牌（只存哈希）",
+      "owner": "security"
+    },
+    {
+      "key": "audit_logs",
+      "desc": "审计日志",
+      "owner": "security"
+    },
+    {
+      "key": "security",
+      "desc": "防爆破计数与会话配置",
+      "owner": "security"
+    },
+    {
+      "key": "ip_rules",
+      "desc": "IP 黑白名单",
+      "owner": "security/server"
+    },
+    {
+      "key": "ip_access_logs",
+      "desc": "IP 拦截日志",
+      "owner": "server"
+    },
+    {
+      "key": "ip_last_allowed",
+      "desc": "最近放行的 IP",
+      "owner": "server"
+    },
+    {
+      "key": "api_key_ips",
+      "desc": "密钥来源 IP 统计",
+      "owner": "keysvc"
+    },
+    {
+      "key": "account_status",
+      "desc": "账号运行态（冷却/积分/模型冷却）",
+      "owner": "pool"
+    },
+    {
+      "key": "account_overrides",
+      "desc": "账号本地覆盖",
+      "owner": "switch_store"
+    },
+    {
+      "key": "session_bindings",
+      "desc": "会话亲和表",
+      "owner": "pool"
+    },
+    {
+      "key": "active",
+      "desc": "当前账号（本服务视图）",
+      "owner": "switch_store"
+    },
+    {
+      "key": "accounts",
+      "desc": "账号运行时视图（不落盘）",
+      "owner": "switch_store"
+    },
+    {
+      "key": "pool",
+      "desc": "池配置",
+      "owner": "pool"
+    },
+    {
+      "key": "groups",
+      "desc": "分组",
+      "owner": "groups"
+    },
+    {
+      "key": "egress",
+      "desc": "出口线路与绑定",
+      "owner": "egress"
+    },
+    {
+      "key": "alerts",
+      "desc": "告警配置",
+      "owner": "alerts"
+    },
+    {
+      "key": "usage_stats",
+      "desc": "用量统计桶",
+      "owner": "usage"
+    },
+    {
+      "key": "checkin_logs",
+      "desc": "任务流水",
+      "owner": "pool"
+    },
+    {
+      "key": "travel_states",
+      "desc": "旅行状态",
+      "owner": "travel"
+    },
+    {
+      "key": "runtime_since",
+      "desc": "本次会话起点",
+      "owner": "switch_store"
+    },
+    {
+      "key": "runtime_total_sec",
+      "desc": "累计运行秒数",
+      "owner": "switch_store"
+    },
+    {
+      "key": "runtime_sessions",
+      "desc": "启动次数",
+      "owner": "switch_store"
+    },
+    {
+      "key": "model_aliases",
+      "desc": "模型别名",
+      "owner": "server"
+    },
+    {
+      "key": "secret",
+      "desc": "站点密钥",
+      "owner": "settings_store"
+    },
+    {
+      "key": "settings",
+      "desc": "站点设置",
+      "owner": "settings_store"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "name": "responses_stream",
+  "note": "Codex 的 /v1/responses：chat SSE → Responses SSE",
+  "request": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "headers": {
+      "authorization": "Bearer <redacted>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "model": "deepseek-v4-flash",
+      "input": "hi",
+      "stream": true
+    }
+  },
+  "upstream": {
+    "method": "POST",
+    "url": "https://copilot.tencent.com/v2/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "authorization": "Bearer <redacted>",
+      "x-user-id": "golden-uid",
+      "x-enterprise-id": "",
+      "x-tenant-id": "",
+      "x-domain": "www.codebuddy.cn",
+      "user-agent": "codebuddy2openai/2.0"
+    },
+    "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"model\":\"deepseek-v4-flash\",\"stream_options\":{\"include_usage\":true}}"
+  },
+  "upstream_response": {
+    "status": 200,
+    "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "body": "event: response.created\ndata: {\"type\": \"response.created\", \"sequence_number\": 0, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"in_progress\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [], \"parallel_tool_calls\": true, \"usage\": null}}\n\nevent: response.in_progress\ndata: {\"type\": \"response.in_progress\", \"sequence_number\": 1, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"in_progress\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [], \"parallel_tool_calls\": true, \"usage\": null}}\n\nevent: response.output_item.added\ndata: {\"type\": \"response.output_item.added\", \"sequence_number\": 2, \"output_index\": 0, \"item\": {\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"in_progress\", \"role\": \"assistant\", \"content\": []}}\n\nevent: response.content_part.added\ndata: {\"type\": \"response.content_part.added\", \"sequence_number\": 3, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"\", \"annotations\": []}}\n\nevent: response.output_text.delta\ndata: {\"type\": \"response.output_text.delta\", \"sequence_number\": 4, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"delta\": \"pong\"}\n\nevent: response.output_text.done\ndata: {\"type\": \"response.output_text.done\", \"sequence_number\": 5, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"text\": \"pong\"}\n\nevent: response.content_part.done\ndata: {\"type\": \"response.content_part.done\", \"sequence_number\": 6, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}}\n\nevent: response.output_item.done\ndata: {\"type\": \"response.output_item.done\", \"sequence_number\": 7, \"output_index\": 0, \"item\": {\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}]}}\n\nevent: response.completed\ndata: {\"type\": \"response.completed\", \"sequence_number\": 8, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"completed\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [{\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}]}], \"parallel_tool_calls\": true, \"usage\": {\"input_tokens\": 3, \"input_tokens_details\": {\"cached_tokens\": 0}, \"output_tokens\": 1, \"output_tokens_details\": {\"reasoning_tokens\": 0}, \"total_tokens\": 4}}}\n\n",
+    "data_frames": [
+      "data: {\"type\": \"response.created\", \"sequence_number\": 0, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"in_progress\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [], \"parallel_tool_calls\": true, \"usage\": null}}",
+      "data: {\"type\": \"response.in_progress\", \"sequence_number\": 1, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"in_progress\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [], \"parallel_tool_calls\": true, \"usage\": null}}",
+      "data: {\"type\": \"response.output_item.added\", \"sequence_number\": 2, \"output_index\": 0, \"item\": {\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"in_progress\", \"role\": \"assistant\", \"content\": []}}",
+      "data: {\"type\": \"response.content_part.added\", \"sequence_number\": 3, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"\", \"annotations\": []}}",
+      "data: {\"type\": \"response.output_text.delta\", \"sequence_number\": 4, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"delta\": \"pong\"}",
+      "data: {\"type\": \"response.output_text.done\", \"sequence_number\": 5, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"text\": \"pong\"}",
+      "data: {\"type\": \"response.content_part.done\", \"sequence_number\": 6, \"output_index\": 0, \"item_id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"content_index\": 0, \"part\": {\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}}",
+      "data: {\"type\": \"response.output_item.done\", \"sequence_number\": 7, \"output_index\": 0, \"item\": {\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}]}}",
+      "data: {\"type\": \"response.completed\", \"sequence_number\": 8, \"response\": {\"id\": \"resp_399a26a968711ae538a0fd2d\", \"object\": \"response\", \"created_at\": 1793243189, \"status\": \"completed\", \"error\": null, \"incomplete_details\": null, \"model\": \"deepseek-v4-flash\", \"output\": [{\"type\": \"message\", \"id\": \"msg_6603dbbc6cf9ac4cd6757a8f\", \"status\": \"completed\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"pong\", \"annotations\": []}]}], \"parallel_tool_calls\": true, \"usage\": {\"input_tokens\": 3, \"input_tokens_details\": {\"cached_tokens\": 0}, \"output_tokens\": 1, \"output_tokens_details\": {\"reasoning_tokens\": 0}, \"total_tokens\": 4}}}"
+    ]
+  }
+}

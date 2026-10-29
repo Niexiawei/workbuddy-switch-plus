@@ -1,0 +1,67 @@
+{
+  "name": "chat_desktop",
+  "note": "桌面端流量：保持旧行为（桌面 UA、丢弃 CLI 字段）",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": {
+      "authorization": "Bearer <redacted>",
+      "content-type": "application/json",
+      "user-agent": "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1"
+    },
+    "body": {
+      "model": "deepseek-v4-flash",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are an AI agent powered by Golden Harness.\nKeep this rule."
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "max_tokens": 64,
+      "reasoning_effort": "high",
+      "reasoning_summary": "auto",
+      "cache_retention": "long",
+      "extra_vars": {
+        "harnessMetadata": "{\"schemaVersion\":1}",
+        "initiator": "user"
+      }
+    }
+  },
+  "upstream": {
+    "method": "POST",
+    "url": "https://copilot.tencent.com/v2/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json",
+      "authorization": "Bearer <redacted>",
+      "x-user-id": "golden-uid",
+      "x-enterprise-id": "",
+      "x-tenant-id": "",
+      "x-domain": "www.codebuddy.cn",
+      "user-agent": "codebuddy2openai/2.0"
+    },
+    "body": "{\"messages\":[{\"role\":\"system\",\"content\":\"Keep this rule.\"},{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"model\":\"deepseek-v4-flash\",\"reasoning_summary\":\"auto\",\"reasoning_effort\":\"high\",\"stream_options\":{\"include_usage\":true},\"max_tokens\":64}"
+  },
+  "upstream_response": {
+    "status": 200,
+    "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "text/event-stream; charset=utf-8",
+    "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n",
+    "data_frames": [
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"}}]}",
+      "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}",
+      "data: [DONE]"
+    ]
+  }
+}
