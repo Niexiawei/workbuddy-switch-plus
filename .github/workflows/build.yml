@@ -204,13 +204,30 @@ jobs:
       - name: Build desktop app
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Secret 里存的是 base64 包裹的 minisign 私钥（本地
+          # ~/.wb-switch-plus/wb-switch-updater.key 的原样内容）。直接把 base64
+          # 喂给 tauri 会报 "Missing comment in secret key"——它要的是解码后的
+          # 「untrusted comment: ...」三行格式，所以这里先解码。
+          TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
           if ! [[ "$VER" =~ ^[0-9] ]]; then
             VER=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           fi
+          KEY_FILE="$RUNNER_TEMP/updater.key"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_B64" ]; then
+            echo "error: secret TAURI_SIGNING_PRIVATE_KEY is empty" >&2
+            exit 1
+          fi
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 -d > "$KEY_FILE"
+          # 解码结果必须是标准 minisign 私钥（首行 untrusted comment），验一下再喂
+          head -1 "$KEY_FILE" | grep -q '^untrusted comment:' || {
+            echo "error: decoded key does not look like a minisign secret key (missing 'untrusted comment:' header)" >&2
+            exit 1
+          }
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
+          rm -f "$KEY_FILE"
           BUNDLE_ROOT="target/${{ matrix.target }}/release/bundle"
           # cargo cache 会保留旧 NSIS/DMG/AppImage；不清理就会把旧版本产物带进 Release。
           rm -rf "$BUNDLE_ROOT"
