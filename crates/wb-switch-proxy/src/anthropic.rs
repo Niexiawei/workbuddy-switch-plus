@@ -32,9 +32,10 @@ fn tool_choice_to_chat(choice: &Value) -> Option<Value> {
         "auto" => Some(json!("auto")),
         "any" => Some(json!("required")),
         "none" => Some(json!("none")),
-        "tool" => choice.get("name").and_then(Value::as_str).map(|name| {
-            json!({"type": "function", "function": {"name": name}})
-        }),
+        "tool" => choice
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| json!({"type": "function", "function": {"name": name}})),
         _ => None,
     }
 }
@@ -51,7 +52,10 @@ pub fn request_to_chat(body: &Value) -> Value {
 
     if let Some(items) = body.get("messages").and_then(Value::as_array) {
         for message in items {
-            let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user");
             let content = message.get("content").cloned().unwrap_or(Value::Null);
             if role == "assistant" {
                 let text = text_of(&content);
@@ -94,7 +98,10 @@ pub fn request_to_chat(body: &Value) -> Value {
                                 }
                             }
                             Some("tool_result") => {
-                                let tool_use_id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+                                let tool_use_id = block
+                                    .get("tool_use_id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
                                 tool_results.push(json!({
                                     "role": "tool",
                                     "tool_call_id": tool_use_id,
@@ -120,7 +127,11 @@ pub fn request_to_chat(body: &Value) -> Value {
         "stream": true,
         "stream_options": {"include_usage": true},
     });
-    for (from, to) in [("max_tokens", "max_tokens"), ("temperature", "temperature"), ("top_p", "top_p")] {
+    for (from, to) in [
+        ("max_tokens", "max_tokens"),
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+    ] {
         if let Some(value) = body.get(from) {
             chat[to] = value.clone();
         }
@@ -200,17 +211,20 @@ impl AnthropicStream {
             return Vec::new();
         }
         self.started = true;
-        event("message_start", json!({
-            "type": "message_start",
-            "message": {
-                "id": "msg_rust_proxy",
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": self.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            }
-        }))
+        event(
+            "message_start",
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_rust_proxy",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": self.model,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            }),
+        )
     }
 
     fn open_text(&mut self) -> Vec<u8> {
@@ -220,11 +234,14 @@ impl AnthropicStream {
         self.text_open = true;
         let index = self.next_index;
         self.next_index += 1;
-        let mut out = event("content_block_start", json!({
-            "type": "content_block_start",
-            "index": index,
-            "content_block": {"type": "text", "text": ""},
-        }));
+        let mut out = event(
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": {"type": "text", "text": ""},
+            }),
+        );
         out.extend(self.index_of_text(index));
         out
     }
@@ -239,47 +256,76 @@ impl AnthropicStream {
         while let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = self.buffer.drain(..=position).collect();
             let line = String::from_utf8_lossy(&line);
-            let Some(data) = line.trim().strip_prefix("data:") else { continue };
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
             let data = data.trim();
             if data.is_empty() || data == "[DONE]" {
                 continue;
             }
-            let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
             if let Some(error) = value.get("error") {
                 self.error = Some(error.clone());
                 continue;
             }
             if let Some(usage) = value.get("usage") {
-                self.prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(self.prompt_tokens);
-                self.completion_tokens = usage.get("completion_tokens").and_then(Value::as_i64).unwrap_or(self.completion_tokens);
+                self.prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(self.prompt_tokens);
+                self.completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(self.completion_tokens);
             }
-            let Some(choice) = value.get("choices").and_then(Value::as_array).and_then(|rows| rows.first()) else { continue };
+            let Some(choice) = value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+            else {
+                continue;
+            };
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 if !reason.is_empty() {
                     self.finish = Some(reason.to_string());
                 }
             }
-            let Some(delta) = choice.get("delta") else { continue };
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 if !text.is_empty() {
                     out.extend(self.open_text());
-                    out.extend(event("content_block_delta", json!({
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {"type": "text_delta", "text": text},
-                    })));
+                    out.extend(event(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": text},
+                        }),
+                    ));
                 }
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for (order, call) in calls.iter().enumerate() {
-                    let id = call.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let name = call
                         .get("function")
                         .and_then(|function| function.get("name"))
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    if self.tool_blocks.iter().all(|(_, existing, _)| existing != &id || id.is_empty()) {
+                    if self
+                        .tool_blocks
+                        .iter()
+                        .all(|(_, existing, _)| existing != &id || id.is_empty())
+                    {
                         let index = self.next_index;
                         self.next_index += 1;
                         self.tool_blocks.push((index, id.clone(), name.clone()));
@@ -289,17 +335,29 @@ impl AnthropicStream {
                             "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}},
                         })));
                     }
-                    let Some((index, _, _)) = self.tool_blocks.iter().find(|(_, existing, _)| existing == &id).cloned() else {
+                    let Some((index, _, _)) = self
+                        .tool_blocks
+                        .iter()
+                        .find(|(_, existing, _)| existing == &id)
+                        .cloned()
+                    else {
                         let _ = order;
                         continue;
                     };
-                    if let Some(args) = call.get("function").and_then(|function| function.get("arguments")).and_then(Value::as_str) {
+                    if let Some(args) = call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                    {
                         if !args.is_empty() {
-                            out.extend(event("content_block_delta", json!({
-                                "type": "content_block_delta",
-                                "index": index,
-                                "delta": {"type": "input_json_delta", "partial_json": args},
-                            })));
+                            out.extend(event(
+                                "content_block_delta",
+                                json!({
+                                    "type": "content_block_delta",
+                                    "index": index,
+                                    "delta": {"type": "input_json_delta", "partial_json": args},
+                                }),
+                            ));
                         }
                     }
                 }
@@ -316,17 +374,26 @@ impl AnthropicStream {
             return out;
         }
         if self.finish.is_none() {
-            out.extend(event("error", json!({
-                "type": "error",
-                "error": {"type": "incomplete_stream", "message": "上游流在终态帧之前结束"},
-            })));
+            out.extend(event(
+                "error",
+                json!({
+                    "type": "error",
+                    "error": {"type": "incomplete_stream", "message": "上游流在终态帧之前结束"},
+                }),
+            ));
             return out;
         }
         if self.text_open {
-            out.extend(event("content_block_stop", json!({"type": "content_block_stop", "index": 0})));
+            out.extend(event(
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": 0}),
+            ));
         }
         for (index, _, _) in self.tool_blocks.clone() {
-            out.extend(event("content_block_stop", json!({"type": "content_block_stop", "index": index})));
+            out.extend(event(
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": index}),
+            ));
         }
         out.extend(event("message_delta", json!({
             "type": "message_delta",
@@ -348,7 +415,8 @@ mod tests {
             .join("../../tests/fixtures/proxy/dataplane/anthropic_stream.json");
         let case: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let chat = request_to_chat(&case["request"]["body"]);
-        let expected: Value = serde_json::from_str(case["upstream"]["body"].as_str().unwrap()).unwrap();
+        let expected: Value =
+            serde_json::from_str(case["upstream"]["body"].as_str().unwrap()).unwrap();
         assert_eq!(chat, expected);
     }
 
@@ -361,8 +429,14 @@ data: [DONE]\n\n";
         let mut out = stream.feed(upstream.as_bytes());
         out.extend(stream.finish());
         let text = String::from_utf8_lossy(&out).to_string();
-        for name in ["message_start", "content_block_start", "content_block_delta",
-                     "content_block_stop", "message_delta", "message_stop"] {
+        for name in [
+            "message_start",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop",
+        ] {
             assert!(text.contains(&format!("event: {name}")), "缺少事件 {name}");
         }
         assert!(text.contains("\"text\":\"pong\""));
@@ -382,8 +456,14 @@ data: [DONE]\n\n";
 
 /// 非流式：把 chat.completion 转成 Anthropic message 对象。
 pub fn completion_to_message(completion: &Value, model: &str) -> Value {
-    let choice = completion.get("choices").and_then(Value::as_array).and_then(|rows| rows.first());
-    let message = choice.and_then(|row| row.get("message")).cloned().unwrap_or_else(|| json!({}));
+    let choice = completion
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first());
+    let message = choice
+        .and_then(|row| row.get("message"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let text = message.get("content").and_then(Value::as_str).unwrap_or("");
     let mut content = Vec::new();
     if !text.is_empty() {
@@ -391,10 +471,16 @@ pub fn completion_to_message(completion: &Value, model: &str) -> Value {
     }
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
-            let name = call.get("function").and_then(|function| function.get("name"))
-                .and_then(Value::as_str).unwrap_or("");
-            let arguments = call.get("function").and_then(|function| function.get("arguments"))
-                .and_then(Value::as_str).unwrap_or("{}");
+            let name = call
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let arguments = call
+                .get("function")
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+                .unwrap_or("{}");
             let input: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
             content.push(json!({
                 "type": "tool_use",
@@ -404,8 +490,13 @@ pub fn completion_to_message(completion: &Value, model: &str) -> Value {
             }));
         }
     }
-    let finish = choice.and_then(|row| row.get("finish_reason")).and_then(Value::as_str);
-    let usage = completion.get("usage").cloned().unwrap_or_else(|| json!({}));
+    let finish = choice
+        .and_then(|row| row.get("finish_reason"))
+        .and_then(Value::as_str);
+    let usage = completion
+        .get("usage")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     json!({
         "id": "msg_rust_proxy",
         "type": "message",
@@ -431,10 +522,15 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
         loop {
             match tokio::time::timeout(IDLE, stream.next()).await {
                 Err(_) => {
-                    let _ = tx.send(Bytes::from(event("error", json!({
-                        "type": "error",
-                        "error": {"type": "stream_timeout", "message": "上游长时间无响应"},
-                    })))).await;
+                    let _ = tx
+                        .send(Bytes::from(event(
+                            "error",
+                            json!({
+                                "type": "error",
+                                "error": {"type": "stream_timeout", "message": "上游长时间无响应"},
+                            }),
+                        )))
+                        .await;
                     return;
                 }
                 Ok(None) => break,
@@ -445,10 +541,15 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
                     }
                 }
                 Ok(Some(Err(error))) => {
-                    let _ = tx.send(Bytes::from(event("error", json!({
-                        "type": "error",
-                        "error": {"type": "transport", "message": error.to_string()},
-                    })))).await;
+                    let _ = tx
+                        .send(Bytes::from(event(
+                            "error",
+                            json!({
+                                "type": "error",
+                                "error": {"type": "transport", "message": error.to_string()},
+                            }),
+                        )))
+                        .await;
                     return;
                 }
             }
@@ -458,7 +559,9 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
     });
 
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (Ok::<_, std::io::Error>(item), rx))
+        rx.recv()
+            .await
+            .map(|item| (Ok::<_, std::io::Error>(item), rx))
     });
     Response::builder()
         .status(axum::http::StatusCode::OK)

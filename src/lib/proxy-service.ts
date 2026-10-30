@@ -26,10 +26,9 @@ export type ProxyServiceStatus = {
   baseUrl?: string;
   /** 端口偏移时的现成提示文案；未偏移时为 null。 */
   portNotice?: string | null;
-  /** 宿主令牌（管理面鉴权用）。 */
-  hostToken: string;
   /** `phase === "failed"` 时的原因。 */
   error?: string;
+  // hostToken 已随管理面 HTTP 退役（附录 C）：管理面走进程内通道，与令牌无关。
 };
 
 export async function proxyServiceStatus(): Promise<ProxyServiceStatus> {
@@ -48,16 +47,8 @@ export async function proxyServiceStop(): Promise<ProxyServiceStatus> {
 export async function proxyServiceSetPort(port: number): Promise<ProxyServiceStatus> {
   return invoke<ProxyServiceStatus>("proxy_service_set_port", { port });
 }
-
-/**
- * 取宿主令牌。
- *
- * 只存在进程内存里，不落 localStorage：页面刷新时重新 invoke 一次即可。
- * 桌面端以外的宿主没有这个命令，调用方应先判 `isDesktop()`。
- */
-export async function proxyAdminToken(): Promise<string> {
-  return invoke<string>("proxy_admin_token");
-}
+// proxyAdminToken 已删除：管理面不在 HTTP 上，令牌概念随宿主注入形态一起退役
+// （附录 C）。管理面调用经 `reverse-proxy.ts` 的 setAdminChannel / proxy_admin_request。
 
 /** 端口合法区间。0 在 Rust 侧表示「系统分配」，对用户无意义，因此不接受。 */
 export function isValidPort(value: number): boolean {

@@ -29,7 +29,12 @@ const DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 32_768;
 const TTL: Duration = Duration::from_secs(60);
 
-const NON_CHAT_TAGS: &[&str] = &["text-to-image", "image-to-image", "text-to-video", "image-to-video"];
+const NON_CHAT_TAGS: &[&str] = &[
+    "text-to-image",
+    "image-to-image",
+    "text-to-video",
+    "image-to-video",
+];
 const NON_CHAT_ID_WORDS: &[&str] = &["completion", "rewrite", "jump", "codewise"];
 
 fn client() -> &'static reqwest::Client {
@@ -44,7 +49,9 @@ fn client() -> &'static reqwest::Client {
 }
 
 fn is_chat_model(entry: &Value) -> bool {
-    let Some(id) = entry.get("id").and_then(Value::as_str) else { return false };
+    let Some(id) = entry.get("id").and_then(Value::as_str) else {
+        return false;
+    };
     if id.is_empty() {
         return false;
     }
@@ -60,7 +67,9 @@ fn is_chat_model(entry: &Value) -> bool {
     if entry.get("vendor").and_then(Value::as_str) == Some("tencent") {
         return false;
     }
-    if id.starts_with("custom-local:") || entry.get("vendor").and_then(Value::as_str) == Some("Custom") {
+    if id.starts_with("custom-local:")
+        || entry.get("vendor").and_then(Value::as_str) == Some("Custom")
+    {
         return false;
     }
     let lower = id.to_ascii_lowercase();
@@ -94,8 +103,12 @@ fn reasoning_efforts(entry: &Value) -> Vec<String> {
         .and_then(|reasoning| reasoning.get("supportedEfforts"))
         .and_then(Value::as_array)
         .map(|levels| {
-            levels.iter().filter_map(Value::as_str).filter(|level| !level.is_empty())
-                .map(str::to_string).collect()
+            levels
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|level| !level.is_empty())
+                .map(str::to_string)
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -129,16 +142,29 @@ fn models_array(payload: &Value) -> Option<&Vec<Value>> {
     payload
         .get("models")
         .and_then(Value::as_array)
-        .or_else(|| payload.get("data").and_then(|data| data.get("models")).and_then(Value::as_array))
+        .or_else(|| {
+            payload
+                .get("data")
+                .and_then(|data| data.get("models"))
+                .and_then(Value::as_array)
+        })
         .or_else(|| payload.get("data").and_then(Value::as_array))
 }
 
 /// 解析上游 /v3/config（也兼容 /console/.../models 的信封）。
 pub fn parse_catalogue(text: &str) -> Vec<Value> {
-    let Ok(value) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
     let payload = value.get("data").unwrap_or(&value);
     models_array(payload)
-        .map(|items| items.iter().filter(|entry| is_chat_model(entry)).cloned().collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|entry| is_chat_model(entry))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -160,7 +186,10 @@ fn cached_product_config() -> Option<PathBuf> {
             .trim_end_matches(".json")
             .parse::<u64>()
             .unwrap_or(0);
-        let modified = entry.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
         let path = entry.path();
         let better = match &best {
             None => true,
@@ -186,8 +215,12 @@ fn candidate_product_paths() -> Vec<PathBuf> {
     }
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let path = PathBuf::from(local)
-            .join("Programs").join("WorkBuddy").join("resources")
-            .join("app.asar.unpacked").join("cli").join("product.json");
+            .join("Programs")
+            .join("WorkBuddy")
+            .join("resources")
+            .join("app.asar.unpacked")
+            .join("cli")
+            .join("product.json");
         if path.is_file() {
             paths.push(path);
         }
@@ -227,7 +260,14 @@ async fn remote_entries(state: &AppState) -> Vec<Value> {
             .get(format!("{base}{path}"))
             .header("authorization", format!("Bearer {token}"))
             .header("accept", "application/json")
-            .header("x-domain", if view.domain.is_empty() { "www.codebuddy.cn".to_string() } else { view.domain.clone() })
+            .header(
+                "x-domain",
+                if view.domain.is_empty() {
+                    "www.codebuddy.cn".to_string()
+                } else {
+                    view.domain.clone()
+                },
+            )
             .timeout(Duration::from_secs(15))
             .send()
             .await;
@@ -235,7 +275,9 @@ async fn remote_entries(state: &AppState) -> Vec<Value> {
         if !response.status().is_success() {
             continue;
         }
-        let Ok(text) = response.text().await else { continue };
+        let Ok(text) = response.text().await else {
+            continue;
+        };
         for entry in parse_catalogue(&text) {
             if let Some(id) = entry.get("id").and_then(Value::as_str) {
                 if seen.insert(id.to_string()) {
@@ -335,6 +377,9 @@ mod tests {
     #[test]
     fn disabled_multimodal_wins() {
         let entry = json!({"id": "x", "supportsImages": true, "disabledMultimodal": true});
-        assert_eq!(metadata_of(&entry, "catalogue")["input_modalities"], json!(["text"]));
+        assert_eq!(
+            metadata_of(&entry, "catalogue")["input_modalities"],
+            json!(["text"])
+        );
     }
 }

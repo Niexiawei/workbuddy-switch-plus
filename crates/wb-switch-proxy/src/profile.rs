@@ -24,8 +24,13 @@ pub const CLI_EXTRA_BODY_KEYS: &[&str] = &["extra_vars", "cache_retention"];
 
 /// 反代必须保留、客户端不允许覆盖的头。
 const RESERVED: &[&str] = &[
-    "authorization", "content-type", "accept", "x-user-id", "x-enterprise-id",
-    "x-tenant-id", "x-domain",
+    "authorization",
+    "content-type",
+    "accept",
+    "x-user-id",
+    "x-enterprise-id",
+    "x-tenant-id",
+    "x-domain",
 ];
 
 /// 归一化外部传入的头名：小写 + 去空白。调用方不必自己转。
@@ -40,7 +45,11 @@ where
 }
 
 pub fn detect(headers: &BTreeMap<String, String>) -> &'static str {
-    if headers.get("x-ide-type").map(|value| value.eq_ignore_ascii_case(CLI)) == Some(true) {
+    if headers
+        .get("x-ide-type")
+        .map(|value| value.eq_ignore_ascii_case(CLI))
+        == Some(true)
+    {
         return CLI;
     }
     if headers
@@ -99,7 +108,8 @@ mod tests {
         assert_eq!(detect(&incoming()), CLI);
         let ua_only = lower_headers([("User-Agent", "cli/2.177.1")]);
         assert_eq!(detect(&ua_only), CLI);
-        let desktop = lower_headers([("User-Agent", "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1")]);
+        let desktop =
+            lower_headers([("User-Agent", "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1")]);
         assert_eq!(detect(&desktop), DESKTOP);
     }
 

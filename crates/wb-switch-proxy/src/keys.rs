@@ -28,7 +28,11 @@ pub struct KeyInfo {
 fn sha256_hex(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn token_of(headers: &HeaderMap) -> String {
@@ -36,7 +40,11 @@ fn token_of(headers: &HeaderMap) -> String {
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .or_else(|| headers.get("x-api-key").and_then(|value| value.to_str().ok()))
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        })
         .unwrap_or("")
         .trim()
         .to_string()
@@ -51,7 +59,10 @@ fn reject(status: StatusCode, message: &str, kind: &str, code: &str) -> Response
 }
 
 fn now_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
 }
 
 /// 判断来源地址是否满足该密钥的 IP 白名单。
@@ -71,7 +82,9 @@ pub fn ip_allowed(allowlist: &[String], peer: Option<IpAddr>) -> bool {
     let Some(peer) = peer else {
         return true;
     };
-    allowlist.iter().any(|entry| entry_matches(entry.trim(), peer))
+    allowlist
+        .iter()
+        .any(|entry| entry_matches(entry.trim(), peer))
 }
 
 fn entry_matches(entry: &str, peer: IpAddr) -> bool {
@@ -79,8 +92,10 @@ fn entry_matches(entry: &str, peer: IpAddr) -> bool {
         return false;
     }
     if let Some((network, prefix)) = entry.split_once('/') {
-        let (Ok(network), Ok(prefix)) = (network.trim().parse::<IpAddr>(), prefix.trim().parse::<u8>())
-        else {
+        let (Ok(network), Ok(prefix)) = (
+            network.trim().parse::<IpAddr>(),
+            prefix.trim().parse::<u8>(),
+        ) else {
             return false;
         };
         return cidr_contains(network, prefix, peer);
@@ -98,14 +113,22 @@ fn cidr_contains(network: IpAddr, prefix: u8, peer: IpAddr) -> bool {
             if prefix > 32 {
                 return false;
             }
-            let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
             (u32::from(network) & mask) == (u32::from(peer) & mask)
         }
         (IpAddr::V6(network), IpAddr::V6(peer)) => {
             if prefix > 128 {
                 return false;
             }
-            let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
             (u128::from(network) & mask) == (u128::from(peer) & mask)
         }
         _ => false,
@@ -128,21 +151,42 @@ pub fn authenticate(
     }
     let token = token_of(headers);
     if token.is_empty() {
-        return Err(reject(StatusCode::UNAUTHORIZED, "缺少 API Key", "authentication_error", "missing_key"));
+        return Err(reject(
+            StatusCode::UNAUTHORIZED,
+            "缺少 API Key",
+            "authentication_error",
+            "missing_key",
+        ));
     }
     let digest = sha256_hex(&token);
-    let Some((id, entry)) = keys.iter().find(|(_, entry)| {
-        entry.get("hash").and_then(Value::as_str) == Some(digest.as_str())
-    }) else {
-        return Err(reject(StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", "invalid_key"));
+    let Some((id, entry)) = keys
+        .iter()
+        .find(|(_, entry)| entry.get("hash").and_then(Value::as_str) == Some(digest.as_str()))
+    else {
+        return Err(reject(
+            StatusCode::UNAUTHORIZED,
+            "invalid api key",
+            "authentication_error",
+            "invalid_key",
+        ));
     };
 
     if entry.get("enabled").and_then(Value::as_bool) == Some(false) {
-        return Err(reject(StatusCode::FORBIDDEN, "该密钥已停用", "permission_error", "key_disabled"));
+        return Err(reject(
+            StatusCode::FORBIDDEN,
+            "该密钥已停用",
+            "permission_error",
+            "key_disabled",
+        ));
     }
     if let Some(expires) = entry.get("expires_at").and_then(Value::as_i64) {
         if expires > 0 && expires as u64 <= now_seconds() {
-            return Err(reject(StatusCode::FORBIDDEN, "该密钥已过期", "permission_error", "key_expired"));
+            return Err(reject(
+                StatusCode::FORBIDDEN,
+                "该密钥已过期",
+                "permission_error",
+                "key_expired",
+            ));
         }
     }
 
@@ -150,7 +194,13 @@ pub fn authenticate(
     let allowlist: Vec<String> = entry
         .get("ip_allowlist")
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     if !ip_allowed(&allowlist, peer) {
         return Err(reject(
@@ -165,7 +215,10 @@ pub fn authenticate(
         let allowed = entry.get("models").and_then(Value::as_array);
         if let Some(allowed) = allowed {
             if !allowed.is_empty() {
-                let hit = allowed.iter().filter_map(Value::as_str).any(|item| item == model);
+                let hit = allowed
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|item| item == model);
                 if !hit {
                     return Err(reject(
                         StatusCode::BAD_REQUEST,
@@ -179,7 +232,10 @@ pub fn authenticate(
     }
 
     let quota = entry.get("quota").and_then(Value::as_i64).unwrap_or(0);
-    let used = entry.get("used_tokens").and_then(Value::as_i64).unwrap_or(0);
+    let used = entry
+        .get("used_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     if quota > 0 && used >= quota {
         return Err(reject(
             StatusCode::TOO_MANY_REQUESTS,
@@ -196,7 +252,11 @@ pub fn authenticate(
         .map(str::to_string);
     Ok(Some(KeyInfo {
         id: id.clone(),
-        name: entry.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+        name: entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         realm,
     }))
 }
@@ -209,13 +269,20 @@ mod tests {
     fn store_with(keys: Value) -> (tempfile::TempDir, StateStore) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        std::fs::write(&path, serde_json::to_string(&json!({"keys": keys})).unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_string(&json!({"keys": keys})).unwrap(),
+        )
+        .unwrap();
         (dir, StateStore::open(&path).unwrap())
     }
 
     fn headers(token: &str) -> HeaderMap {
         let mut map = HeaderMap::new();
-        map.insert("authorization", HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
+        map.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
         map
     }
 
@@ -232,7 +299,9 @@ mod tests {
     #[test]
     fn empty_instance_allows_everything() {
         let (_dir, store) = store_with(json!({}));
-        assert!(authenticate(&store, &headers("any"), None, None).unwrap().is_none());
+        assert!(authenticate(&store, &headers("any"), None, None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -244,17 +313,33 @@ mod tests {
 
     #[test]
     fn disabled_and_expired_are_403() {
-        let (_dir, store) = store_with(json!({"k1": key_entry("secret", json!({"enabled": false}))}));
-        assert_eq!(authenticate(&store, &headers("secret"), None, None).unwrap_err().status(), StatusCode::FORBIDDEN);
+        let (_dir, store) =
+            store_with(json!({"k1": key_entry("secret", json!({"enabled": false}))}));
+        assert_eq!(
+            authenticate(&store, &headers("secret"), None, None)
+                .unwrap_err()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
 
-        let (_dir2, store2) = store_with(json!({"k1": key_entry("secret", json!({"expires_at": 1}))}));
-        assert_eq!(authenticate(&store2, &headers("secret"), None, None).unwrap_err().status(), StatusCode::FORBIDDEN);
+        let (_dir2, store2) =
+            store_with(json!({"k1": key_entry("secret", json!({"expires_at": 1}))}));
+        assert_eq!(
+            authenticate(&store2, &headers("secret"), None, None)
+                .unwrap_err()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]
     fn model_whitelist_and_realm() {
-        let (_dir, store) = store_with(json!({"k1": key_entry("secret", json!({"models": ["glm-5.3"], "realm": "cn"}))}));
-        let info = authenticate(&store, &headers("secret"), Some("glm-5.3"), None).unwrap().unwrap();
+        let (_dir, store) = store_with(
+            json!({"k1": key_entry("secret", json!({"models": ["glm-5.3"], "realm": "cn"}))}),
+        );
+        let info = authenticate(&store, &headers("secret"), Some("glm-5.3"), None)
+            .unwrap()
+            .unwrap();
         assert_eq!(info.realm.as_deref(), Some("cn"));
         let error = authenticate(&store, &headers("secret"), Some("other"), None).unwrap_err();
         assert_eq!(error.status(), StatusCode::BAD_REQUEST);
@@ -262,9 +347,12 @@ mod tests {
 
     #[test]
     fn quota_exhausted_is_429() {
-        let (_dir, store) = store_with(json!({"k1": key_entry("secret", json!({"quota": 10, "used_tokens": 10}))}));
+        let (_dir, store) =
+            store_with(json!({"k1": key_entry("secret", json!({"quota": 10, "used_tokens": 10}))}));
         assert_eq!(
-            authenticate(&store, &headers("secret"), None, None).unwrap_err().status(),
+            authenticate(&store, &headers("secret"), None, None)
+                .unwrap_err()
+                .status(),
             StatusCode::TOO_MANY_REQUESTS
         );
     }
@@ -300,7 +388,10 @@ mod tests {
     fn prefix_zero_matches_whole_family_but_not_other_family() {
         let list = vec!["0.0.0.0/0".to_string()];
         assert!(ip_allowed(&list, Some(ip("1.2.3.4"))));
-        assert!(!ip_allowed(&list, Some(ip("::1"))), "v4 全放行不该顺带放行 v6");
+        assert!(
+            !ip_allowed(&list, Some(ip("::1"))),
+            "v4 全放行不该顺带放行 v6"
+        );
     }
 
     #[test]
@@ -339,8 +430,10 @@ mod tests {
 
     #[test]
     fn auth_rejects_ip_outside_allowlist() {
-        let (_dir, store) = store_with(json!({"k1": key_entry("secret", json!({"ip_allowlist": ["10.0.0.0/8"]}))}));
-        let error = authenticate(&store, &headers("secret"), None, Some(ip("203.0.113.9"))).unwrap_err();
+        let (_dir, store) =
+            store_with(json!({"k1": key_entry("secret", json!({"ip_allowlist": ["10.0.0.0/8"]}))}));
+        let error =
+            authenticate(&store, &headers("secret"), None, Some(ip("203.0.113.9"))).unwrap_err();
         assert_eq!(error.status(), StatusCode::FORBIDDEN);
         let ok = authenticate(&store, &headers("secret"), None, Some(ip("10.1.1.1"))).unwrap();
         assert!(ok.is_some());

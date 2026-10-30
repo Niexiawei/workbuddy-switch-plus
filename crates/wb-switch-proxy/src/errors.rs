@@ -84,7 +84,11 @@ pub fn classify(status: u16, body: &str, error_type: Option<&str>) -> Failure {
     let message = parsed
         .as_ref()
         .and_then(|value| {
-            value.get("msg").or_else(|| value.get("message")).and_then(Value::as_str).map(str::to_string)
+            value
+                .get("msg")
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
         .unwrap_or_else(|| body.chars().take(300).collect::<String>());
     let kind = match error_type {

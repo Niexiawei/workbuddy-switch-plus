@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ALERT_PASSWORD_MASK, pickAlertPatch, rp, setHostProvider } from "./reverse-proxy";
+import { ALERT_PASSWORD_MASK, pickAlertPatch, rp, setAdminChannel } from "./reverse-proxy";
 
 /**
  * 新增面板的 API 客户端契约：告警 / 模型别名 / 用量统计。
@@ -13,7 +13,6 @@ import { ALERT_PASSWORD_MASK, pickAlertPatch, rp, setHostProvider } from "./reve
  * 之后所有告警邮件都发不出去，且没人会知道为什么。这条必须钉死。
  */
 
-const TOKEN = "wbt_panel_token";
 
 function stubLocalStorage() {
   const store = new Map<string, string>();
@@ -25,29 +24,15 @@ function stubLocalStorage() {
   });
   return store;
 }
-
-function stubFetch(payload: unknown = { ok: true }) {
-  const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
-    Promise.resolve(
-      new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    ),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-function call(fetchMock: ReturnType<typeof stubFetch>, index = 0): [string, RequestInit] {
-  return fetchMock.mock.calls[index] as unknown as [string, RequestInit];
-}
-
+type ChannelCall = { method: string; path: string; body: unknown };  let channelCalls: ChannelCall[] = []; let channelReply: unknown = { ok: true }; let channelStatus = 200;  /** 装一个会记录调用的通道桩。payload 与旧 stubFetch 的语义一致。 */ function stubFetch(payload: unknown = { ok: true }) {   channelCalls = [];   channelReply = payload;   channelStatus = 200;   return channelCalls; }  /** 取第 index 次调用的 [path, method, body]。 */ function call(calls: ReturnType<typeof stubFetch>, index = 0): [string, string, unknown] {   const entry = calls[index];   if (!entry) throw new Error(`no call ${index}`);   return [entry.path, entry.method, entry.body]; }
 beforeEach(() => {
   stubLocalStorage();
-// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setAdminChannel）：
     // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
-    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
+    setAdminChannel(async (method, path, body) => {
+  channelCalls.push({ method, path, body });
+  return { status: channelStatus, body: channelReply };
+});
 });
 
 afterEach(() => {
@@ -59,28 +44,28 @@ describe("告警配置 API", () => {
   it("alerts() 打到 /admin/api/alerts，方法 GET", async () => {
     const fetchMock = stubFetch({ enabled: false });
     await rp.alerts();
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/alerts");
-    expect(init.method ?? "GET").toBe("GET");
-    expect(init.headers).toMatchObject({ "X-Proxy-Host-Token": TOKEN });
+
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("alerts");
+    expect(method ?? "GET").toBe("GET");
   });
 
   it("saveAlerts() 用 PUT 且只发传进来的键", async () => {
     const fetchMock = stubFetch({ enabled: true });
     await rp.saveAlerts({ credits_threshold: 555 });
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/alerts");
-    expect(init.method).toBe("PUT");
+    const [path, method, body] = call(fetchMock);
+    expect(path).toBe("alerts");
+    expect(method).toBe("PUT");
     // 浅合并语义：没传的键绝不能出现在 body 里，否则会把另一端刚改的值覆盖回去。
-    expect(JSON.parse(String(init.body))).toEqual({ credits_threshold: 555 });
+    expect(body).toEqual({ credits_threshold: 555 });
   });
 
   it("testAlerts() 用 POST 打到 alerts/test", async () => {
     const fetchMock = stubFetch({ ok: true, message: "已发送" });
     const res = await rp.testAlerts();
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/alerts/test");
-    expect(init.method).toBe("POST");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("alerts/test");
+    expect(method).toBe("POST");
     expect(res.message).toBe("已发送");
   });
 });
@@ -131,7 +116,7 @@ describe("告警口令掩码（最关键的一组）", () => {
     const body = pickAlertPatch({ ...cfg, credits_threshold: 200 });
     await rp.saveAlerts(body);
 
-    const sent = JSON.parse(String(call(fetchMock, 1)[1].body));
+    const sent = call(fetchMock, 1)[2] as Record<string, unknown>;
     expect("password" in sent).toBe(false);
     expect(sent.credits_threshold).toBe(200);
   });
@@ -140,7 +125,7 @@ describe("告警口令掩码（最关键的一组）", () => {
     // 这条不是测产品逻辑，是把「为什么必须有 pickAlertPatch」固定下来。
     const fetchMock = stubFetch({ ok: true });
     await rp.saveAlerts({ password: ALERT_PASSWORD_MASK });
-    const sent = JSON.parse(String(call(fetchMock)[1].body));
+    const sent = call(fetchMock)[2] as Record<string, unknown>;
     expect(sent.password).toBe(ALERT_PASSWORD_MASK);
     // 于是服务端会把真口令存成 ******** —— 静默、无报错。
   });
@@ -150,25 +135,25 @@ describe("模型别名 API", () => {
   it("modelAliases() 用 GET 打到 model-aliases", async () => {
     const fetchMock = stubFetch({ aliases: {}, known_models: [], default_model: "x", unknown_targets: [] });
     await rp.modelAliases();
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/model-aliases");
-    expect(init.method ?? "GET").toBe("GET");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("model-aliases");
+    expect(method ?? "GET").toBe("GET");
   });
 
   it("saveModelAliases() 用 POST 且包在 aliases 键里", async () => {
     const fetchMock = stubFetch({ ok: true, aliases: {} });
     await rp.saveModelAliases({ "gpt-4o": "glm-5.2" });
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/model-aliases");
-    expect(init.method).toBe("POST");
+    const [path, method, body] = call(fetchMock);
+    expect(path).toBe("model-aliases");
+    expect(method).toBe("POST");
     // 后端读的是 body.aliases，不是裸对象 —— 少包一层会得到 400「aliases 必须是对象」。
-    expect(JSON.parse(String(init.body))).toEqual({ aliases: { "gpt-4o": "glm-5.2" } });
+    expect(body).toEqual({ aliases: { "gpt-4o": "glm-5.2" } });
   });
 
   it("传空表就是清空（整表替换语义）", async () => {
     const fetchMock = stubFetch({ ok: true, aliases: {} });
     await rp.saveModelAliases({});
-    expect(JSON.parse(String(call(fetchMock)[1].body))).toEqual({ aliases: {} });
+    expect(call(fetchMock)[2]).toEqual({ aliases: {} });
   });
 });
 
@@ -176,16 +161,16 @@ describe("用量统计 API", () => {
   it("usageStats() 把 days/hours 拼进查询串", async () => {
     const fetchMock = stubFetch({ daily: [], hourly: [], totals: {}, window: {} });
     await rp.usageStats(7, 12);
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/usage/stats?days=7&hours=12");
-    expect(init.method ?? "GET").toBe("GET");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("usage/stats?days=7&hours=12");
+    expect(method ?? "GET").toBe("GET");
   });
 
   it("usageStats() 默认 30 天 / 24 小时", async () => {
     const fetchMock = stubFetch({ daily: [], hourly: [], totals: {}, window: {} });
     await rp.usageStats();
-    const [url] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/usage/stats?days=30&hours=24");
+    const [path] = call(fetchMock);
+    expect(path).toBe("usage/stats?days=30&hours=24");
   });
 
   it("解析出后端返回的分桶与总量字段", async () => {

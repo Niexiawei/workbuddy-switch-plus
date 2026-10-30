@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { rp, type RpAuditLog, type RpIpLog, type RpIpRule, type RpSecurityConfig } from "@/lib/reverse-proxy";
+import { rp, type RpIpLog, type RpIpRule, type RpSecurityConfig } from "@/lib/reverse-proxy";
 import { Banner, Empty, Field, PanelHeader, ToneBadge, fmtTime } from "./rp-shared";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 
@@ -15,7 +15,6 @@ export function SecurityPanel() {
   const [config, setConfig] = useState<RpSecurityConfig>({ enabled: false, mode: "blacklist" });
   const [rules, setRules] = useState<RpIpRule[]>([]);
   const [logs, setLogs] = useState<RpIpLog[]>([]);
-  const [audit, setAudit] = useState<RpAuditLog[]>([]);
   const [kind, setKind] = useState("allow");
   const [cidr, setCidr] = useState("");
   const [note, setNote] = useState("");
@@ -24,8 +23,8 @@ export function SecurityPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [c, r, l, a] = await Promise.all([rp.securityConfig(), rp.ipRules(), rp.ipLogs(), rp.auditLogs()]);
-      setConfig(c); setRules(r); setLogs(l); setAudit(a);
+      const [c, r, l] = await Promise.all([rp.securityConfig(), rp.ipRules(), rp.ipLogs()]);
+      setConfig(c); setRules(r); setLogs(l);
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : String(cause));
     }
@@ -81,7 +80,6 @@ export function SecurityPanel() {
         <TabsList>
           <TabsTrigger value="rules">规则（{rules.length}）</TabsTrigger>
           <TabsTrigger value="access">访问日志（{logs.length}）</TabsTrigger>
-          <TabsTrigger value="audit">审计日志（{audit.length}）</TabsTrigger>
         </TabsList>
 
         <TabsContent value="rules" className="mt-4 flex flex-col gap-4">
@@ -176,44 +174,6 @@ export function SecurityPanel() {
                       <td className="px-3 py-1.5 font-mono">{log.ip}</td>
                       <td className="px-3 py-1.5 font-mono">{log.path}</td>
                       <td className="px-3 py-1.5"><ToneBadge tone={log.blocked ? "bad" : "ok"}>{log.blocked ? "拦截" : "放行"}</ToneBadge></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </TabsContent>
-
-        <TabsContent value="audit" className="mt-4 flex flex-col gap-3">
-          <div className="flex justify-end">
-            <Button
-              variant="outline" size="sm"
-              onClick={() => confirm.ask({
-                title: "清空审计日志？",
-                description: "只会清掉历史记录；清空这个动作本身会作为一条新记录留下。",
-                confirmLabel: "清空", danger: true,
-                run: async () => { await rp.clearAuditLogs(); await load(); },
-              })}
-            >清空日志</Button>
-          </div>
-          {audit.length === 0 ? <Empty title="暂无审计记录" desc="登录、密钥/用户/安全策略的变更都会记录在此。" /> : (
-            <div className="max-h-[28rem] overflow-y-auto rounded-xl border border-border/70">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-muted/60 text-muted-foreground backdrop-blur">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">时间</th>
-                    <th className="px-3 py-2 text-left font-medium">操作者</th>
-                    <th className="px-3 py-2 text-left font-medium">动作</th>
-                    <th className="px-3 py-2 text-left font-medium">对象 / 详情</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {audit.map((row, i) => (
-                    <tr key={i} className="border-t border-border/50 align-top">
-                      <td className="px-3 py-1.5 font-mono text-[10px] text-muted-foreground">{fmtTime(row.time)}</td>
-                      <td className="px-3 py-1.5">{row.actor}</td>
-                      <td className="px-3 py-1.5 font-mono">{row.action}</td>
-                      <td className="px-3 py-1.5 text-muted-foreground">{row.target}{row.detail ? ` · ${row.detail}` : ""}</td>
                     </tr>
                   ))}
                 </tbody>

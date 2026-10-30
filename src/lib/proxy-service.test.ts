@@ -22,7 +22,6 @@ function status(over: Partial<ProxyServiceStatus> = {}): ProxyServiceStatus {
     portShifted: false,
     baseUrl: "http://127.0.0.1:8787",
     portNotice: null,
-    hostToken: "wbh_test",
     ...over,
   };
 }

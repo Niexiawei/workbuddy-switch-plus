@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { rp, type RpSession, type RpUser } from "@/lib/reverse-proxy";
+import { type RpSession, type RpUser } from "@/lib/reverse-proxy";
+import { legacyRequest as rp } from "@/pages/reverse-proxy/legacy/legacy-admin";
 import { Banner, Empty, Field, PanelHeader, ToneBadge } from "./rp-shared";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 
@@ -23,7 +24,7 @@ export function UsersPanel({ users, session, reload, onRelogin }: {
 
   async function setRole(user: RpUser, role: string) {
     try {
-      const result = await rp.updateUser(user.username, { role });
+      const result = await rp<{ username: string; role: string; sessions_revoked?: boolean; relogin_required?: boolean }>(`users/${encodeURIComponent(user.username)}`, { method: "PATCH", body: { role } });
       toast.success(`已将 ${user.username} 设为${role === "admin" ? "管理员" : "只读"}`);
       if (result.relogin_required) { onRelogin(); return; }
       await reload();
@@ -52,7 +53,7 @@ export function UsersPanel({ users, session, reload, onRelogin }: {
             description: "所有已登录的浏览器会话（含当前这次）都会立即失效，需要重新登录。",
             confirmLabel: "吊销并重新登录",
             danger: true,
-            run: async () => { await rp.revokeSessions(); onRelogin(); },
+            run: async () => { await rp("sessions/revoke", { method: "POST" }); onRelogin(); },
           })}
         >吊销我的全部会话</Button>
       </div>
@@ -98,7 +99,7 @@ export function UsersPanel({ users, session, reload, onRelogin }: {
                             description: `「${user.username}」将无法再登录，其会话立即失效。`,
                             confirmLabel: "删除",
                             danger: true,
-                            run: () => rp.deleteUser(user.username),
+                            run: () => rp(`users/${encodeURIComponent(user.username)}`, { method: "DELETE" }),
                           })}
                         >删除</Button>
                       </div>
@@ -129,7 +130,7 @@ export function UsersPanel({ users, session, reload, onRelogin }: {
               onClick={async () => {
                 if (!passwordTarget) return;
                 try {
-                  const result = await rp.updateUser(passwordTarget.username, { password: newPassword });
+                  const result = await rp<{ username: string; role: string; sessions_revoked?: boolean; relogin_required?: boolean }>(`users/${encodeURIComponent(passwordTarget.username)}`, { method: "PATCH", body: { password: newPassword } });
                   toast.success("密码已更新");
                   setPasswordTarget(null);
                   if (result.relogin_required) { onRelogin(); return; }
@@ -187,7 +188,7 @@ function CreateUserDialog({ open, onOpenChange, onCreated }: {
             onClick={async () => {
               setBusy(true); setError("");
               try {
-                await rp.addUser(username.trim(), password, role);
+                await rp("users", { method: "POST", body: { username: username.trim(), password, role } });
                 setUsername(""); setPassword(""); setRole("viewer");
                 toast.success("用户已创建");
                 await onCreated();

@@ -22,10 +22,7 @@ import GuidePage from "@/pages/reverse-proxy/GuidePage";
 import ModelsPage from "@/pages/reverse-proxy/ModelsPage";
 import ServicePage from "@/pages/reverse-proxy/ServicePage";
 import AlertsPage from "@/pages/reverse-proxy/AlertsPage";
-import TokensPage from "@/pages/reverse-proxy/TokensPage";
-import UsersPage from "@/pages/reverse-proxy/UsersPage";
 import SecurityPage from "@/pages/reverse-proxy/SecurityPage";
-import AuditPage from "@/pages/reverse-proxy/AuditPage";
 import LegacyReverseProxyPage from "@/pages/reverse-proxy/legacy/LegacyReverseProxyPage";
 import {
   REVERSE_PROXY_DEFAULT_SEGMENT,
@@ -402,10 +399,7 @@ export default function App() {
               <Route path="models" element={<ModelsPage />} />
               <Route path="service" element={<ServicePage />} />
               <Route path="alerts" element={<AlertsPage />} />
-              <Route path="tokens" element={<TokensPage />} />
-              <Route path="users" element={<UsersPage />} />
               <Route path="security" element={<SecurityPage />} />
-              <Route path="audit" element={<AuditPage />} />
               <Route path="*" element={<Navigate to={REVERSE_PROXY_DEFAULT_SEGMENT} replace />} />
             </Route>
             {/* Python 版（回滚通道）：独立入口，与内置服务互斥，见 LegacyReverseProxyPage。 */}

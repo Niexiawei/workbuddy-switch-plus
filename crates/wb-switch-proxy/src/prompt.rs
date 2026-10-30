@@ -12,15 +12,33 @@ use serde_json::Value;
 pub const NEUTRAL_IDENTITY: &str = "You are a software engineering assistant.";
 
 /// 实测被拒 → 可通过的措辞。新增一条前请先用真实账号确认「只改这一处就能通过」。
-const RESTATEMENTS: &[(&str, &str)] = &[
-    ("Tokens prefixed with @ are paths the user explicitly referenced.",
-     "Tokens starting with @ name paths the user referenced."),
-];
+const RESTATEMENTS: &[(&str, &str)] = &[(
+    "Tokens prefixed with @ are paths the user explicitly referenced.",
+    "Tokens starting with @ name paths the user referenced.",
+)];
 
 const IDENTITY_WORDS: &[&str] = &[
-    "ai", "agent", "assistant", "model", "llm", "codebuddy", "workbuddy", "claude",
-    "codex", "gpt", "deepseek", "qwen", "kimi", "glm", "anthropic", "openai",
-    "人工智能", "智能助手", "编程助手", "语言模型", "智能体",
+    "ai",
+    "agent",
+    "assistant",
+    "model",
+    "llm",
+    "codebuddy",
+    "workbuddy",
+    "claude",
+    "codex",
+    "gpt",
+    "deepseek",
+    "qwen",
+    "kimi",
+    "glm",
+    "anthropic",
+    "openai",
+    "人工智能",
+    "智能助手",
+    "编程助手",
+    "语言模型",
+    "智能体",
 ];
 
 fn has_identity_word(text: &str) -> bool {
@@ -128,9 +146,11 @@ pub fn normalize_body(body: &mut Value) {
             Some(Value::Array(blocks)) => {
                 let mut out = Vec::with_capacity(blocks.len());
                 for mut block in blocks {
-                    if block.get("type").and_then(Value::as_str).is_some_and(|kind| {
-                        matches!(kind, "text" | "input_text" | "output_text")
-                    }) {
+                    if block
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| matches!(kind, "text" | "input_text" | "output_text"))
+                    {
                         if let Some(text) = block.get("text").and_then(Value::as_str) {
                             block["text"] = Value::String(restate(&filter_system_text(text)));
                         }
@@ -184,7 +204,14 @@ mod tests {
             {"role": "system", "content": "You are an AI agent powered by X."}
         ]});
         normalize_body(&mut body);
-        assert_eq!(body["messages"].as_array().unwrap().len(), 1, "空 system 消息应被丢弃");
-        assert_eq!(body["messages"][0]["content"], json!("You are an AI agent powered by X."));
+        assert_eq!(
+            body["messages"].as_array().unwrap().len(),
+            1,
+            "空 system 消息应被丢弃"
+        );
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!("You are an AI agent powered by X.")
+        );
     }
 }

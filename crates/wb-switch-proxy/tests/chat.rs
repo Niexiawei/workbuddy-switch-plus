@@ -18,7 +18,8 @@ const SSE_OK: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"ass
 data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n\
 data: [DONE]\n\n";
 
-const SSE_INCOMPLETE: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\n";
+const SSE_INCOMPLETE: &str =
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\n";
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -53,7 +54,11 @@ fn fixture(upstream: String) -> Fixture {
         r#"[{"id":"a1","uid":"u1","nickname":"测试","variant":"cn","domain":"www.codebuddy.cn","access_token":"account-token"}]"#,
     )
     .unwrap();
-    Fixture { _dir: dir, root, upstream }
+    Fixture {
+        _dir: dir,
+        root,
+        upstream,
+    }
 }
 
 fn app(fixture: &Fixture) -> Router {
@@ -66,7 +71,7 @@ fn app(fixture: &Fixture) -> Router {
         billing_base: "http://127.0.0.1:1".to_string(),
     };
     let store = StateStore::open(fixture.root.join("state.json")).unwrap();
-    router(Arc::new(AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled())))
+    router(Arc::new(AppState::new(cfg, store)))
 }
 
 async fn post_json(app: Router, uri: &str, body: serde_json::Value) -> (StatusCode, String) {
@@ -82,7 +87,9 @@ async fn post_json(app: Router, uri: &str, body: serde_json::Value) -> (StatusCo
         .await
         .unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -104,7 +111,9 @@ async fn post_chat(app: Router, stream: bool) -> (StatusCode, String) {
         .await
         .unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -137,7 +146,10 @@ async fn incomplete_upstream_stream_appends_error_frame() {
     let (status, text) = post_chat(app(&fixture), true).await;
     assert_eq!(status, StatusCode::OK, "流已经开始，HTTP 状态无法再改");
     assert!(text.contains("half"));
-    assert!(text.contains("incomplete_stream"), "半截回答必须显式报错: {text}");
+    assert!(
+        text.contains("incomplete_stream"),
+        "半截回答必须显式报错: {text}"
+    );
 }
 
 #[tokio::test]
@@ -165,7 +177,10 @@ async fn anthropic_route_emits_message_events() {
     let (status, text) = post_json(app(&fixture), "/v1/messages", body).await;
     assert_eq!(status, StatusCode::OK);
     for name in ["message_start", "content_block_delta", "message_stop"] {
-        assert!(text.contains(&format!("event: {name}")), "缺少 {name}: {text}");
+        assert!(
+            text.contains(&format!("event: {name}")),
+            "缺少 {name}: {text}"
+        );
     }
     assert!(text.contains("\"text\":\"pong\""));
 }
@@ -177,8 +192,15 @@ async fn responses_route_emits_responses_events() {
     let body = json!({"model": "deepseek-v4-flash", "input": "hi", "stream": true});
     let (status, text) = post_json(app(&fixture), "/v1/responses", body).await;
     assert_eq!(status, StatusCode::OK);
-    for name in ["response.created", "response.output_text.delta", "response.completed"] {
-        assert!(text.contains(&format!("event: {name}")), "缺少 {name}: {text}");
+    for name in [
+        "response.created",
+        "response.output_text.delta",
+        "response.completed",
+    ] {
+        assert!(
+            text.contains(&format!("event: {name}")),
+            "缺少 {name}: {text}"
+        );
     }
     assert!(text.contains("\"delta\":\"pong\""));
 }

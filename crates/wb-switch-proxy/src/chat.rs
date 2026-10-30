@@ -39,7 +39,13 @@ impl Default for StreamGuard {
 
 impl StreamGuard {
     pub fn new() -> Self {
-        Self { buffer: Vec::new(), finish: None, done: false, saw_content: false, error: None }
+        Self {
+            buffer: Vec::new(),
+            finish: None,
+            done: false,
+            saw_content: false,
+            error: None,
+        }
     }
 
     pub fn feed(&mut self, chunk: &[u8]) {
@@ -48,13 +54,17 @@ impl StreamGuard {
             let line: Vec<u8> = self.buffer.drain(..=index).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim();
-            let Some(data) = line.strip_prefix("data:") else { continue };
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
             let data = data.trim();
             if data == "[DONE]" {
                 self.done = true;
                 continue;
             }
-            let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
             if let Some(error) = value.get("error") {
                 let code = error.get("code").and_then(Value::as_i64);
                 let message = error
@@ -62,11 +72,15 @@ impl StreamGuard {
                     .and_then(Value::as_str)
                     .or_else(|| value.get("msg").and_then(Value::as_str))
                     .unwrap_or("upstream error");
-                self.error = Some(errors::classify(400, &json!({"code": code}).to_string(), None))
-                    .map(|mut failure| {
-                        failure.message = message.to_string();
-                        failure
-                    });
+                self.error = Some(errors::classify(
+                    400,
+                    &json!({"code": code}).to_string(),
+                    None,
+                ))
+                .map(|mut failure| {
+                    failure.message = message.to_string();
+                    failure
+                });
                 let _ = code;
                 continue;
             }
@@ -78,10 +92,19 @@ impl StreamGuard {
                         }
                     }
                     if let Some(delta) = choice.get("delta") {
-                        let has_content = delta.get("content").and_then(Value::as_str).map(|text| !text.is_empty())
+                        let has_content = delta
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .map(|text| !text.is_empty())
                             .unwrap_or(false)
-                            || delta.get("reasoning_content").and_then(Value::as_str).is_some()
-                            || delta.get("tool_calls").and_then(Value::as_array).map(|calls| !calls.is_empty())
+                            || delta
+                                .get("reasoning_content")
+                                .and_then(Value::as_str)
+                                .is_some()
+                            || delta
+                                .get("tool_calls")
+                                .and_then(Value::as_array)
+                                .map(|calls| !calls.is_empty())
                                 .unwrap_or(false);
                         if has_content {
                             self.saw_content = true;
@@ -117,7 +140,11 @@ fn sse_error(failure: &Failure) -> Bytes {
 /// 供适配器复用的 502 错误响应。
 pub fn transport_error_response(message: &str) -> Response {
     let failure = errors::classify(0, message, Some(errors::UNAVAILABLE));
-    (StatusCode::BAD_GATEWAY, Json(errors::error_payload(&failure))).into_response()
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(errors::error_payload(&failure)),
+    )
+        .into_response()
 }
 
 fn not_implemented(message: &str) -> Response {
@@ -128,8 +155,12 @@ fn not_implemented(message: &str) -> Response {
         .into_response()
 }
 
-fn upstream_headers(view: &accounts::AccountView, token: &str, incoming: &BTreeMap<String, String>,
-                     profile: &str) -> BTreeMap<String, String> {
+fn upstream_headers(
+    view: &accounts::AccountView,
+    token: &str,
+    incoming: &BTreeMap<String, String>,
+    profile: &str,
+) -> BTreeMap<String, String> {
     let mut base = profile::lower_headers([
         ("content-type", "application/json"),
         ("accept", "application/json"),
@@ -137,16 +168,21 @@ fn upstream_headers(view: &accounts::AccountView, token: &str, incoming: &BTreeM
     ]);
     base.insert("authorization".into(), format!("Bearer {token}"));
     base.insert("x-user-id".into(), view.uid.clone());
-    base.insert("x-domain".into(), if view.domain.is_empty() {
-        "www.codebuddy.cn".to_string()
-    } else {
-        view.domain.clone()
-    });
+    base.insert(
+        "x-domain".into(),
+        if view.domain.is_empty() {
+            "www.codebuddy.cn".to_string()
+        } else {
+            view.domain.clone()
+        },
+    );
     profile::merge_outbound_headers(base, incoming, profile)
 }
 
 pub fn desensitize_enabled() -> bool {
-    std::env::var("WB_PROXY_DESENSITIZE").map(|value| value == "1").unwrap_or(false)
+    std::env::var("WB_PROXY_DESENSITIZE")
+        .map(|value| value == "1")
+        .unwrap_or(false)
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -185,7 +221,10 @@ pub async fn open_upstream(
     let headers = upstream_headers(&selected.account, &selected.token, incoming, profile);
     let mut request = http_client().post(state.cfg.chat_url()).json(body);
     for (name, value) in &headers {
-        if let (Ok(name), Ok(value)) = (name.parse::<header::HeaderName>(), HeaderValue::from_str(value)) {
+        if let (Ok(name), Ok(value)) = (
+            name.parse::<header::HeaderName>(),
+            HeaderValue::from_str(value),
+        ) {
             request = request.header(name, value);
         }
     }
@@ -193,20 +232,30 @@ pub async fn open_upstream(
         Ok(response) => response,
         Err(error) => {
             let failure = errors::classify(0, &error.to_string(), Some(errors::UNAVAILABLE));
-            state.pool.record(&selected.account_id, 502, model, Some(&failure));
+            state
+                .pool
+                .record(&selected.account_id, 502, model, Some(&failure));
             state.pool.release(&selected.account_id);
-            return Err((StatusCode::BAD_GATEWAY, Json(errors::error_payload(&failure))).into_response());
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(errors::error_payload(&failure)),
+            )
+                .into_response());
         }
     };
     let status = response.status();
     if status.is_success() {
-        state.pool.record(&selected.account_id, status.as_u16(), model, None);
+        state
+            .pool
+            .record(&selected.account_id, status.as_u16(), model, None);
         state.pool.release(&selected.account_id);
         return Ok(response);
     }
     let text = response.text().await.unwrap_or_default();
     let failure = errors::classify(status.as_u16(), &text, None);
-    state.pool.record(&selected.account_id, status.as_u16(), model, Some(&failure));
+    state
+        .pool
+        .record(&selected.account_id, status.as_u16(), model, Some(&failure));
     state.pool.release(&selected.account_id);
     let code = StatusCode::from_u16(failure.http_status).unwrap_or(StatusCode::BAD_GATEWAY);
     Err((code, Json(errors::error_payload(&failure))).into_response())
@@ -230,7 +279,10 @@ pub async fn handle_chat(
     payload: Value,
     key: Option<crate::keys::KeyInfo>,
 ) -> Response {
-    let client_stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let client_stream = payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let profile = profile::detect(&incoming);
     let mut body = wire::normalize_chat(&payload, profile);
     // 脱敏默认关闭（与 Python converter 默认一致）：golden 也是关着录的。
@@ -269,7 +321,8 @@ fn stream_response(response: reqwest::Response) -> Response {
                     }
                 }
                 Ok(Some(Err(error))) => {
-                    let failure = errors::classify(0, &error.to_string(), Some(errors::UNAVAILABLE));
+                    let failure =
+                        errors::classify(0, &error.to_string(), Some(errors::UNAVAILABLE));
                     let _ = tx.send(sse_error(&failure)).await;
                     break;
                 }
@@ -281,7 +334,9 @@ fn stream_response(response: reqwest::Response) -> Response {
     });
 
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (Ok::<_, std::io::Error>(item), rx))
+        rx.recv()
+            .await
+            .map(|item| (Ok::<_, std::io::Error>(item), rx))
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -296,7 +351,11 @@ async fn aggregate_response(response: reqwest::Response, _client_stream: bool) -
         Ok(text) => text,
         Err(error) => {
             let failure = errors::classify(0, &error.to_string(), Some(errors::UNAVAILABLE));
-            return (StatusCode::BAD_GATEWAY, Json(errors::error_payload(&failure))).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(errors::error_payload(&failure)),
+            )
+                .into_response();
         }
     };
     let mut guard = StreamGuard::new();
@@ -321,26 +380,36 @@ pub fn aggregate_sse(text: &str) -> Option<Value> {
     let mut model = String::new();
 
     for line in text.lines() {
-        let Some(data) = line.trim().strip_prefix("data:") else { continue };
+        let Some(data) = line.trim().strip_prefix("data:") else {
+            continue;
+        };
         let data = data.trim();
         if data.is_empty() || data == "[DONE]" {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
         if let Some(name) = value.get("model").and_then(Value::as_str) {
             model = name.to_string();
         }
         if let Some(tokens) = value.get("usage") {
             usage = Some(tokens.clone());
         }
-        let Some(choices) = value.get("choices").and_then(Value::as_array) else { continue };
-        let Some(choice) = choices.first() else { continue };
+        let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(choice) = choices.first() else {
+            continue;
+        };
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             if !reason.is_empty() {
                 finish = Some(reason.to_string());
             }
         }
-        let Some(delta) = choice.get("delta") else { continue };
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
         if let Some(chunk) = delta.get("content").and_then(Value::as_str) {
             content.push_str(chunk);
         }

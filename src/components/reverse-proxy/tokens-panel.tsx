@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { rp, type RpToken } from "@/lib/reverse-proxy";
+import { type RpToken } from "@/lib/reverse-proxy";
+import { legacyRequest as rp } from "@/pages/reverse-proxy/legacy/legacy-admin";
 import { Banner, CodeBlock, Empty, Field, PanelHeader, ToneBadge, fmtTime } from "./rp-shared";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 
@@ -21,7 +22,7 @@ export function TokensPanel({ tokens, reload }: { tokens: RpToken[]; reload: () 
       description: `使用「${token.name}」的自动化脚本将立即失效。`,
       confirmLabel: "删除",
       danger: true,
-      run: () => rp.deleteToken(token.id),
+      run: () => rp(`tokens/${token.id}`, { method: "DELETE" }),
     });
   }
 
@@ -73,7 +74,7 @@ export function TokensPanel({ tokens, reload }: { tokens: RpToken[]; reload: () 
                       <Button
                         variant="outline" size="sm" className="h-7 px-2 text-xs"
                         onClick={async () => {
-                          try { await rp.updateToken(token.id, { enabled: !token.enabled }); await reload(); }
+                          try { await rp(`tokens/${token.id}`, { method: "PATCH", body: { enabled: !token.enabled } }); await reload(); }
                           catch (cause) { toast.error(cause instanceof Error ? cause.message : String(cause)); }
                         }}
                       >{token.enabled ? "停用" : "启用"}</Button>
@@ -133,7 +134,7 @@ function CreateTokenDialog({ open, onOpenChange, onCreated }: {
     try {
       const d = Number(days);
       const expires = d > 0 ? Math.floor(Date.now() / 1000) + Math.round(d * 86400) : null;
-      const result = await rp.createToken(name.trim(), scope, expires);
+      const result = await rp<{ id: string; name: string; token: string }>("tokens", { method: "POST", body: { name: name.trim(), scope, expires_at: expires } });
       setName("");
       setDays("0");
       await onCreated(result.name, result.token);

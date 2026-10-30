@@ -59,7 +59,7 @@ import {
   variantUsesIntlCodebuddyIde,
 } from "@/lib/variant";
 import { useSupportedTools } from "@/lib/supported-tools";
-import { getToken as getProxyToken, rp, type RpAccount } from "@/lib/reverse-proxy";
+import { rp, type RpAccount } from "@/lib/reverse-proxy";
 import type { AccountMeta, AppStatus, CheckinConfig, CreditExpiry, RateLimitEntry, TravelConfig, TravelStatus } from "@/lib/types";
 import { displayName } from "@/lib/account-display";
 import { cn } from "@/lib/utils";
@@ -511,11 +511,7 @@ export default function AccountsPage() {
   const [poolMap, setPoolMap] = useState<Record<string, RpAccount>>({});
 
   async function loadPoolMap() {
-    // 没登录过管理面就不必每 30 秒撞一次 401：池信息只在登录后才有意义。
-    if (!getProxyToken()) {
-      setPoolMap({});
-      return;
-    }
+    // 管理面走进程内通道（无令牌概念）：服务未运行时这里拿到 Err，catch 兜底即可。
     try {
       const summary = await rp.poolSummary();
       const next: Record<string, RpAccount> = {};

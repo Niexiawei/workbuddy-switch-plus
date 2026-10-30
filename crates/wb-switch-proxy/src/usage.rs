@@ -31,7 +31,11 @@ fn sha256_hex(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// 从 `Authorization: Bearer xxx` 或 `x-api-key` 取密钥原文。
@@ -208,7 +212,10 @@ mod tests {
         let mut entry = secret_entry("secret");
         entry["enabled"] = json!(false);
         let (_dir, store) = store_with(json!({"k1": entry}));
-        assert_eq!(handle(&store, &headers("secret")).status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            handle(&store, &headers("secret")).status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[test]

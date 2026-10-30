@@ -79,7 +79,10 @@ impl ProxyConfig {
     }
 
     pub fn chat_url(&self) -> String {
-        format!("{}/v2/chat/completions", self.upstream_base.trim_end_matches('/'))
+        format!(
+            "{}/v2/chat/completions",
+            self.upstream_base.trim_end_matches('/')
+        )
     }
 
     pub fn state_path(&self) -> PathBuf {

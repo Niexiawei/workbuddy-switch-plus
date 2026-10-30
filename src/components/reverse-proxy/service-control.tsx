@@ -4,7 +4,6 @@ import { AlertTriangle, ChevronDown, ChevronRight, FolderOpen, FolderSearch, Glo
 
 import { Button } from "@/components/ui/button";
 import { Banner, CodeBlock, CopyButton, ToneBadge } from "@/components/reverse-proxy/rp-shared";
-import { getBaseUrl } from "@/lib/reverse-proxy";
 import {
   adoptBaseUrl, serviceOpenDataDir, serviceRestartWithHost, serviceRestartWithPort, serviceSetExe,
   serviceStart, serviceStatus, serviceStop, serviceStopElevated,
@@ -23,6 +22,8 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
   // 引擎切换已退场：这一屏只服务「反代服务old」（Python 独立进程）。
   // 内置 Rust 反代由 uiltin-service-card.tsx 管理，不再走这里。
   const rustEngine = false;
+// old 的默认服务地址（LEGACY_PORT=8788）：地址展示在未运行时用它。
+const LEGACY_BASE = "http://127.0.0.1:8788";
   const [status, setStatus] = useState<RpServiceStatus | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "elevate" | "exe" | "open" | "refresh" | "lan" | "port">("");
   const [error, setError] = useState("");
@@ -377,8 +378,8 @@ export function ServiceControl({ onServiceUp }: { onServiceUp?: () => void }) {
 
         <div className="grid min-w-0 gap-2">
           <span className="text-[11px] font-medium text-muted-foreground">管理地址</span>
-          <CodeBlock action={<CopyButton value={running && status ? status.baseUrl : getBaseUrl()} />}>
-            {running && status ? status.baseUrl : getBaseUrl()}
+          <CodeBlock action={<CopyButton value={running && status ? status.baseUrl : LEGACY_BASE} />}>
+            {running && status ? status.baseUrl : LEGACY_BASE}
           </CodeBlock>
         </div>
 

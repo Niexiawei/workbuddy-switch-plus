@@ -35,7 +35,11 @@ fn headers(token: &str) -> reqwest::header::HeaderMap {
 }
 
 fn url(cfg: &ProxyConfig, path: &str) -> String {
-    format!("{}/v2/billing/meter/{}", cfg.billing_base.trim_end_matches('/'), path.trim_start_matches('/'))
+    format!(
+        "{}/v2/billing/meter/{}",
+        cfg.billing_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 async fn post(cfg: &ProxyConfig, path: &str, token: &str, body: Value) -> Result<Value, String> {
@@ -61,7 +65,10 @@ pub async fn credits(cfg: &ProxyConfig, token: &str) -> Result<Value, String> {
     let body = post(cfg, "get-user-resource", token, json!({})).await?;
     let code = body.get("code").and_then(Value::as_i64).unwrap_or(-1);
     if code != 0 {
-        return Err(format!("billing code {code}：{}", body.get("msg").and_then(Value::as_str).unwrap_or("")));
+        return Err(format!(
+            "billing code {code}：{}",
+            body.get("msg").and_then(Value::as_str).unwrap_or("")
+        ));
     }
     let accounts = body
         .get("data")
@@ -76,7 +83,11 @@ pub async fn credits(cfg: &ProxyConfig, token: &str) -> Result<Value, String> {
         let value = account
             .get("CycleCapacityRemainPrecise")
             .or_else(|| account.get("CapacityRemainPrecise"))
-            .and_then(|value| value.as_f64().or_else(|| value.as_str().and_then(|text| text.parse().ok())))
+            .and_then(|value| {
+                value
+                    .as_f64()
+                    .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+            })
             .unwrap_or(0.0);
         remaining += value;
     }
@@ -94,7 +105,10 @@ pub async fn checkin(cfg: &ProxyConfig, token: &str) -> Result<Value, String> {
         return Ok(json!({"status": "already"}));
     }
     if code != 0 {
-        let message = body.get("msg").and_then(Value::as_str).unwrap_or("签到失败");
+        let message = body
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("签到失败");
         return Err(message.to_string());
     }
     let data = body.get("data").cloned().unwrap_or_else(|| json!({}));

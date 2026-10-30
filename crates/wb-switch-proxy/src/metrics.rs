@@ -65,7 +65,15 @@ impl Metrics {
 
     /// 请求结束。`source`：`api`（数据面）或 `test`（管理面连接测试）。
     /// `outcome` 与前端 OUTCOMES 字典对齐：success / stream_error / interrupted / http_error。
-    pub fn finish(&self, path: &str, source: &'static str, status: u16, ok: bool, duration_ms: u64, outcome: &'static str) {
+    pub fn finish(
+        &self,
+        path: &str,
+        source: &'static str,
+        status: u16,
+        ok: bool,
+        duration_ms: u64,
+        outcome: &'static str,
+    ) {
         let mut inner = self.inner.lock().unwrap();
         inner.in_flight = inner.in_flight.saturating_sub(1);
         inner.total += 1;
@@ -154,14 +162,25 @@ mod tests {
         let snapshot = metrics.snapshot();
         // 逐字段核对：前端 RpMetrics 消费的字段一个都不能缺。
         for key in [
-            "started_at", "completed", "in_flight", "succeeded", "failed",
-            "success_rate", "http_success_rate", "avg_duration_ms",
-            "api_count", "test_count", "recent",
+            "started_at",
+            "completed",
+            "in_flight",
+            "succeeded",
+            "failed",
+            "success_rate",
+            "http_success_rate",
+            "avg_duration_ms",
+            "api_count",
+            "test_count",
+            "recent",
         ] {
             assert!(snapshot.get(key).is_some(), "缺字段 {key}");
         }
         assert_eq!(snapshot["completed"], 0);
-        assert!(snapshot["success_rate"].is_null(), "无请求时成功率应为 null");
+        assert!(
+            snapshot["success_rate"].is_null(),
+            "无请求时成功率应为 null"
+        );
         assert!(snapshot["recent"].as_array().unwrap().is_empty());
     }
 
@@ -195,7 +214,14 @@ mod tests {
     #[test]
     fn stream_error_counts_as_failed_but_not_http_success() {
         let metrics = Metrics::new();
-        metrics.finish("/v1/chat/completions", "api", 200, false, 300, "stream_error");
+        metrics.finish(
+            "/v1/chat/completions",
+            "api",
+            200,
+            false,
+            300,
+            "stream_error",
+        );
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot["succeeded"], 0);
         assert_eq!(snapshot["failed"], 1);

@@ -13,7 +13,7 @@ export type ReverseProxyNavItem = {
   segment: string;
   label: string;
   /** 有计数徽标的项，从概览里取哪个数字。 */
-  count?: "accounts" | "keys" | "tokens" | "users";
+  count?: "accounts" | "keys";
 };
 
 export type ReverseProxyNavGroup = {
@@ -57,10 +57,7 @@ export const REVERSE_PROXY_NAV: ReverseProxyNavGroup[] = [
   {
     title: "高级",
     items: [
-      { segment: "tokens", label: "管理令牌", count: "tokens" },
-      { segment: "users", label: "后台账号", count: "users" },
       { segment: "security", label: "IP 安全" },
-      { segment: "audit", label: "审计" },
     ],
   },
 ];

@@ -12,20 +12,39 @@
 use serde_json::{json, Map, Value};
 
 const AGENTIC_TOOL_NAMES: &[&str] = &[
-    "exec_command", "write_stdin", "update_plan", "request_user_input", "view_image",
-    "get_goal", "create_goal", "update_goal", "apply_patch", "tool_search_tool",
+    "exec_command",
+    "write_stdin",
+    "update_plan",
+    "request_user_input",
+    "view_image",
+    "get_goal",
+    "create_goal",
+    "update_goal",
+    "apply_patch",
+    "tool_search_tool",
 ];
 
 const HARNESS_USER_MARKERS: &[&str] = &[
-    "# AGENTS.md instructions", "<environment_context>", "<permissions instructions>",
-    "<collaboration_mode>", "<skills_instructions>", "<system-reminder>", "# claudeMd",
+    "# AGENTS.md instructions",
+    "<environment_context>",
+    "<permissions instructions>",
+    "<collaboration_mode>",
+    "<skills_instructions>",
+    "<system-reminder>",
+    "# claudeMd",
 ];
 
 const HARNESS_SYSTEM_MARKERS: &[&str] = &[
-    "You are a coding agent running in the Codex CLI", "Within this context, Codex refers to",
-    "# AGENTS.md spec", "<permissions instructions>", "<collaboration_mode>",
-    "<skills_instructions>", "The following deferred tools are now available via ToolSearch.",
-    "### Available skills", "## request_user_input availability", "You are Claude Code",
+    "You are a coding agent running in the Codex CLI",
+    "Within this context, Codex refers to",
+    "# AGENTS.md spec",
+    "<permissions instructions>",
+    "<collaboration_mode>",
+    "<skills_instructions>",
+    "The following deferred tools are now available via ToolSearch.",
+    "### Available skills",
+    "## request_user_input availability",
+    "You are Claude Code",
 ];
 
 const BASE_SYSTEM_PROMPT: &str = "You are a coding assistant serving an OpenAI-compatible CLI. \
@@ -45,9 +64,23 @@ const MAX_TAIL_MESSAGES: usize = 8;
 const MAX_TAIL_CHARS: usize = 7000;
 
 const SCHEMA_KEEP_KEYS: &[&str] = &[
-    "type", "properties", "required", "items", "enum", "oneOf", "anyOf", "allOf",
-    "additionalProperties", "format", "minimum", "maximum", "minItems", "maxItems",
-    "minLength", "maxLength", "nullable",
+    "type",
+    "properties",
+    "required",
+    "items",
+    "enum",
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "additionalProperties",
+    "format",
+    "minimum",
+    "maximum",
+    "minItems",
+    "maxItems",
+    "minLength",
+    "maxLength",
+    "nullable",
 ];
 
 fn chars(text: &str) -> Vec<char> {
@@ -65,7 +98,11 @@ fn truncate_text(text: &str, limit: usize) -> String {
     }
     let keep = limit.saturating_sub(24);
     let head: String = all.iter().take(keep).collect();
-    format!("{} ... [truncated {} chars]", head.trim_end(), all.len() - keep)
+    format!(
+        "{} ... [truncated {} chars]",
+        head.trim_end(),
+        all.len() - keep
+    )
 }
 
 fn content_to_text(content: &Value) -> String {
@@ -94,20 +131,36 @@ fn content_to_text(content: &Value) -> String {
 }
 
 fn looks_like_harness_user(text: &str) -> bool {
-    HARNESS_USER_MARKERS.iter().any(|marker| text.contains(marker))
+    HARNESS_USER_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker))
 }
 
 fn looks_like_harness_system(text: &str) -> bool {
-    HARNESS_SYSTEM_MARKERS.iter().any(|marker| text.contains(marker))
+    HARNESS_SYSTEM_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker))
 }
 
 fn message_cost(message: &Value) -> usize {
-    let mut cost = content_to_text(message.get("content").unwrap_or(&Value::Null)).chars().count();
+    let mut cost = content_to_text(message.get("content").unwrap_or(&Value::Null))
+        .chars()
+        .count();
     if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
         for call in calls {
             if let Some(function) = call.get("function") {
-                cost += function.get("name").and_then(Value::as_str).unwrap_or("").chars().count();
-                cost += function.get("arguments").and_then(Value::as_str).unwrap_or("").chars().count();
+                cost += function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .count();
+                cost += function
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .count();
             }
         }
     }
@@ -115,7 +168,18 @@ fn message_cost(message: &Value) -> usize {
 }
 
 fn messages_size(messages: &[Value]) -> usize {
-    messages.iter().map(|message| message_cost(message) + message.get("role").and_then(Value::as_str).unwrap_or("").chars().count()).sum()
+    messages
+        .iter()
+        .map(|message| {
+            message_cost(message)
+                + message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .count()
+        })
+        .sum()
 }
 
 fn tool_name(tool: &Value) -> String {
@@ -128,7 +192,9 @@ fn tool_name(tool: &Value) -> String {
 }
 
 fn tools_size(tools: &[Value]) -> usize {
-    serde_json::to_string(tools).map(|text| text.chars().count()).unwrap_or(0)
+    serde_json::to_string(tools)
+        .map(|text| text.chars().count())
+        .unwrap_or(0)
 }
 
 fn summarize_free_text(text: &str, limit: usize) -> String {
@@ -143,7 +209,12 @@ fn summarize_free_text(text: &str, limit: usize) -> String {
     let head: String = all.iter().take(limit / 2).collect();
     let tail: String = all.iter().skip(all.len() - limit / 3).collect();
     let omitted = all.len() - head.chars().count() - tail.chars().count();
-    format!("{}\n... [{} chars omitted] ...\n{}", head.trim_end(), omitted, tail.trim_start())
+    format!(
+        "{}\n... [{} chars omitted] ...\n{}",
+        head.trim_end(),
+        omitted,
+        tail.trim_start()
+    )
 }
 
 fn summarize_tool_output(text: &str) -> String {
@@ -155,7 +226,10 @@ fn summarize_tool_output(text: &str) -> String {
         return text.to_string();
     }
     let lines: Vec<&str> = text.lines().collect();
-    let exit_line = lines.iter().find(|line| line.contains("Process exited with code")).map(|line| line.trim().to_string());
+    let exit_line = lines
+        .iter()
+        .find(|line| line.contains("Process exited with code"))
+        .map(|line| line.trim().to_string());
     let useful: Vec<&str> = lines
         .iter()
         .map(|line| line.trim_end())
@@ -169,7 +243,11 @@ fn summarize_tool_output(text: &str) -> String {
         .collect();
 
     let head = &useful[..useful.len().min(10)];
-    let tail: &[&str] = if useful.len() > 16 { &useful[useful.len() - 6..] } else { &[] };
+    let tail: &[&str] = if useful.len() > 16 {
+        &useful[useful.len() - 6..]
+    } else {
+        &[]
+    };
     let omitted = useful.len().saturating_sub(head.len() + tail.len());
 
     let mut parts: Vec<String> = Vec::new();
@@ -188,7 +266,10 @@ fn summarize_tool_output(text: &str) -> String {
         parts.extend(tail.iter().map(|line| (*line).to_string()));
     }
     let summary = parts.join("\n").trim().to_string();
-    truncate_text(if summary.is_empty() { text } else { &summary }, MAX_TOOL_OUTPUT_CHARS)
+    truncate_text(
+        if summary.is_empty() { text } else { &summary },
+        MAX_TOOL_OUTPUT_CHARS,
+    )
 }
 
 fn tool_output_inline_summary(text: &str) -> String {
@@ -212,14 +293,25 @@ fn shrink_json_value(value: &Value, depth: usize, key: &str) -> Value {
             Value::Object(out)
         }
         Value::Array(items) => {
-            let mut out: Vec<Value> = items.iter().take(6).map(|item| shrink_json_value(item, depth + 1, key)).collect();
+            let mut out: Vec<Value> = items
+                .iter()
+                .take(6)
+                .map(|item| shrink_json_value(item, depth + 1, key))
+                .collect();
             if items.len() > 6 {
                 out.push(json!(format!("<omitted {} items>", items.len() - 6)));
             }
             Value::Array(out)
         }
         Value::String(text) => {
-            let limit = if matches!(key, "cmd" | "chars" | "patch" | "content" | "text" | "question") { 240 } else { 120 };
+            let limit = if matches!(
+                key,
+                "cmd" | "chars" | "patch" | "content" | "text" | "question"
+            ) {
+                240
+            } else {
+                120
+            };
             json!(truncate_text(text, limit))
         }
         other => other.clone(),
@@ -228,7 +320,8 @@ fn shrink_json_value(value: &Value, depth: usize, key: &str) -> Value {
 
 fn summarize_tool_arguments(name: &str, arguments: &Value) -> String {
     let Some(text) = arguments.as_str() else {
-        return serde_json::to_string(&shrink_json_value(arguments, 0, "")).unwrap_or_else(|_| "{}".to_string());
+        return serde_json::to_string(&shrink_json_value(arguments, 0, ""))
+            .unwrap_or_else(|_| "{}".to_string());
     };
     if text.chars().count() <= MAX_TOOL_ARGS_CHARS {
         return text.to_string();
@@ -237,7 +330,8 @@ fn summarize_tool_arguments(name: &str, arguments: &Value) -> String {
         return json!({"summary": "Large apply_patch payload omitted; a patch was prepared or applied in a previous step."}).to_string();
     }
     match serde_json::from_str::<Value>(text) {
-        Ok(parsed) => serde_json::to_string(&shrink_json_value(&parsed, 0, "")).unwrap_or_else(|_| "{}".to_string()),
+        Ok(parsed) => serde_json::to_string(&shrink_json_value(&parsed, 0, ""))
+            .unwrap_or_else(|_| "{}".to_string()),
         Err(_) => json!({"summary": truncate_text(text, 320)}).to_string(),
     }
 }
@@ -245,7 +339,10 @@ fn summarize_tool_arguments(name: &str, arguments: &Value) -> String {
 fn project_tool_call(call: &Value) -> Option<Value> {
     let function = call.get("function")?;
     let name = function.get("name").and_then(Value::as_str).unwrap_or("");
-    let arguments = function.get("arguments").cloned().unwrap_or_else(|| json!(""));
+    let arguments = function
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!(""));
     Some(json!({
         "id": call.get("id").cloned().unwrap_or(Value::Null),
         "type": call.get("type").and_then(Value::as_str).unwrap_or("function"),
@@ -267,13 +364,24 @@ fn project_schema(schema: &Value, depth: usize) -> Value {
                 let projected = match key.as_str() {
                     "properties" => match value {
                         Value::Object(props) => Value::Object(
-                            props.iter().map(|(name, schema)| (name.clone(), project_schema(schema, depth + 1))).collect(),
+                            props
+                                .iter()
+                                .map(|(name, schema)| {
+                                    (name.clone(), project_schema(schema, depth + 1))
+                                })
+                                .collect(),
                         ),
                         other => other.clone(),
                     },
                     "items" | "additionalProperties" => project_schema(value, depth + 1),
                     "oneOf" | "anyOf" | "allOf" => match value {
-                        Value::Array(items) => Value::Array(items.iter().take(6).map(|item| project_schema(item, depth + 1)).collect()),
+                        Value::Array(items) => Value::Array(
+                            items
+                                .iter()
+                                .take(6)
+                                .map(|item| project_schema(item, depth + 1))
+                                .collect(),
+                        ),
                         other => other.clone(),
                     },
                     _ => value.clone(),
@@ -286,7 +394,13 @@ fn project_schema(schema: &Value, depth: usize) -> Value {
                 Value::Object(out)
             }
         }
-        Value::Array(items) => Value::Array(items.iter().take(6).map(|item| project_schema(item, depth + 1)).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .take(6)
+                .map(|item| project_schema(item, depth + 1))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -298,7 +412,9 @@ fn project_tools(tools: &[Value]) -> (Vec<Value>, Value) {
             continue;
         }
         let function = tool.get("function").unwrap_or(tool);
-        let Some(name) = function.get("name").and_then(Value::as_str) else { continue };
+        let Some(name) = function.get("name").and_then(Value::as_str) else {
+            continue;
+        };
         let mut out = Map::new();
         out.insert("name".to_string(), json!(name));
         if let Some(parameters) = function.get("parameters") {
@@ -358,7 +474,10 @@ fn project_conversation_message(message: &Value, conservative: bool) -> Option<V
 }
 
 fn project_messages_conservative(messages: &[Value]) -> Vec<Value> {
-    messages.iter().filter_map(|message| project_conversation_message(message, true)).collect()
+    messages
+        .iter()
+        .filter_map(|message| project_conversation_message(message, true))
+        .collect()
 }
 
 fn choose_tail_start(messages: &[Value]) -> usize {
@@ -387,7 +506,12 @@ fn expand_tail_for_tool_context(messages: &[Value], start: usize) -> usize {
     let mut needed: Vec<String> = messages[start..]
         .iter()
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|message| {
+            message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
     if needed.is_empty() {
         return start;
@@ -401,7 +525,12 @@ fn expand_tail_for_tool_context(messages: &[Value], start: usize) -> usize {
         let ids: Vec<String> = message
             .get("tool_calls")
             .and_then(Value::as_array)
-            .map(|calls| calls.iter().filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_string)).collect())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         if ids.iter().any(|id| needed.contains(id)) {
             expanded = index;
@@ -415,7 +544,9 @@ fn expand_tail_for_tool_context(messages: &[Value], start: usize) -> usize {
 }
 
 fn latest_user_index(messages: &[Value]) -> Option<usize> {
-    messages.iter().rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+    messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
 }
 
 fn tool_call_name_map(messages: &[Value]) -> std::collections::HashMap<String, String> {
@@ -427,7 +558,10 @@ fn tool_call_name_map(messages: &[Value]) -> std::collections::HashMap<String, S
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
                 let id = call.get("id").and_then(Value::as_str);
-                let name = call.get("function").and_then(|function| function.get("name")).and_then(Value::as_str);
+                let name = call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str);
                 if let (Some(id), Some(name)) = (id, name) {
                     map.insert(id.to_string(), name.to_string());
                 }
@@ -446,12 +580,29 @@ fn history_line(message: &Value, names: &std::collections::HashMap<String, Strin
             let tools: Vec<String> = message
                 .get("tool_calls")
                 .and_then(Value::as_array)
-                .map(|calls| calls.iter().filter_map(|call| call.get("function").and_then(|f| f.get("name")).and_then(Value::as_str).map(str::to_string)).collect())
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(|call| {
+                            call.get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             if !text.is_empty() && !tools.is_empty() {
-                format!("Assistant replied: {} Then called tools: {}.", truncate_text(&text, 160), tools.iter().take(4).cloned().collect::<Vec<_>>().join(", "))
+                format!(
+                    "Assistant replied: {} Then called tools: {}.",
+                    truncate_text(&text, 160),
+                    tools.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+                )
             } else if !tools.is_empty() {
-                format!("Assistant called tools: {}.", tools.iter().take(4).cloned().collect::<Vec<_>>().join(", "))
+                format!(
+                    "Assistant called tools: {}.",
+                    tools.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+                )
             } else if !text.is_empty() {
                 format!("Assistant replied: {}", truncate_text(&text, 180))
             } else {
@@ -459,15 +610,27 @@ fn history_line(message: &Value, names: &std::collections::HashMap<String, Strin
             }
         }
         "tool" => {
-            let name = message.get("tool_call_id").and_then(Value::as_str).and_then(|id| names.get(id)).cloned().unwrap_or_else(|| "tool".to_string());
-            format!("Tool {} returned: {}", name, tool_output_inline_summary(&text))
+            let name = message
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .and_then(|id| names.get(id))
+                .cloned()
+                .unwrap_or_else(|| "tool".to_string());
+            format!(
+                "Tool {} returned: {}",
+                name,
+                tool_output_inline_summary(&text)
+            )
         }
         "system" => format!("System guidance: {}", truncate_text(&text, 180)),
         _ => String::new(),
     }
 }
 
-fn build_history_summary(messages: &[Value], names: &std::collections::HashMap<String, String>) -> String {
+fn build_history_summary(
+    messages: &[Value],
+    names: &std::collections::HashMap<String, String>,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut total = 0;
     let mut summarized = 0;
@@ -476,7 +639,9 @@ fn build_history_summary(messages: &[Value], names: &std::collections::HashMap<S
         if line.is_empty() {
             continue;
         }
-        if summarized >= MAX_HISTORY_ITEMS || total + line.chars().count() > MAX_HISTORY_SUMMARY_CHARS {
+        if summarized >= MAX_HISTORY_ITEMS
+            || total + line.chars().count() > MAX_HISTORY_SUMMARY_CHARS
+        {
             break;
         }
         lines.push(format!("- {line}"));
@@ -485,7 +650,9 @@ fn build_history_summary(messages: &[Value], names: &std::collections::HashMap<S
     }
     let remaining = messages.len().saturating_sub(summarized);
     if remaining > 0 {
-        lines.push(format!("- {remaining} earlier messages or tool results were further condensed."));
+        lines.push(format!(
+            "- {remaining} earlier messages or tool results were further condensed."
+        ));
     }
     if lines.is_empty() {
         return String::new();
@@ -519,7 +686,10 @@ fn merge_guidance(messages: &[String]) -> String {
 }
 
 fn looks_like_agentic_cli(messages: &[Value], tools: &[Value]) -> bool {
-    if tools.iter().any(|tool| AGENTIC_TOOL_NAMES.contains(&tool_name(tool).as_str())) {
+    if tools
+        .iter()
+        .any(|tool| AGENTIC_TOOL_NAMES.contains(&tool_name(tool).as_str()))
+    {
         return true;
     }
     messages.iter().any(|message| {
@@ -531,13 +701,23 @@ fn looks_like_agentic_cli(messages: &[Value], tools: &[Value]) -> bool {
 /// Python 版的默认行为是「不投影」，只有 CODEBUDDY_LOSSY_PROJECTION=1 才启用。
 /// 这里沿用同一开关语义，避免灰度期两边行为不一致。
 pub fn preserve_by_default() -> bool {
-    std::env::var("WB_PROXY_LOSSY_PROJECTION").map(|value| value != "1").unwrap_or(true)
+    std::env::var("WB_PROXY_LOSSY_PROJECTION")
+        .map(|value| value != "1")
+        .unwrap_or(true)
 }
 
 /// 投影入口。返回 (新 body, 统计)。`preserve` 用于排障：完全不动。
 pub fn project(body: &Value, preserve: bool) -> (Value, Value) {
-    let messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
-    let tools = body.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
+    let messages = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if preserve {
         let stats = json!({
             "mode": "preserve", "aggressive": false,
@@ -604,7 +784,9 @@ pub fn project(body: &Value, preserve: bool) -> (Value, Value) {
     let mut tail_start = choose_tail_start(&conversation);
     tail_start = expand_tail_for_tool_context(&conversation, tail_start);
     let latest_user = latest_user_index(&conversation);
-    let anchor = latest_user.filter(|index| *index < tail_start).map(|index| conversation[index].clone());
+    let anchor = latest_user
+        .filter(|index| *index < tail_start)
+        .map(|index| conversation[index].clone());
 
     let omitted: Vec<Value> = conversation
         .iter()
@@ -614,7 +796,8 @@ pub fn project(body: &Value, preserve: bool) -> (Value, Value) {
         .map(|(_, message)| message.clone())
         .collect();
 
-    let mut final_messages: Vec<Value> = vec![json!({"role": "system", "content": BASE_SYSTEM_PROMPT})];
+    let mut final_messages: Vec<Value> =
+        vec![json!({"role": "system", "content": BASE_SYSTEM_PROMPT})];
     let merged = merge_guidance(&guidance);
     if !merged.is_empty() {
         final_messages.push(json!({"role": "system", "content": merged}));
@@ -668,7 +851,9 @@ mod tests {
             "id": "call_1", "type": "function",
             "function": {"name": "exec_command", "arguments": "{\"cmd\":\"cargo test\"}"}
         }]}));
-        messages.push(json!({"role": "tool", "tool_call_id": "call_1", "content": "test failed at line 42"}));
+        messages.push(
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "test failed at line 42"}),
+        );
         messages.push(json!({"role": "user", "content": "Latest question: why?"}));
         // 之后再堆 10 条 assistant 消息，把最新用户意图挤出 tail 窗口，
         // 这样才走 anchor_user 分支（否则它天然就在 tail 里）。
@@ -708,9 +893,18 @@ mod tests {
 
         let messages = projected["messages"].as_array().unwrap();
         assert_eq!(messages[0]["content"], json!(BASE_SYSTEM_PROMPT));
-        let texts: Vec<&str> = messages.iter().filter_map(|m| m["content"].as_str()).collect();
-        assert!(texts.contains(&"Latest question: why?"), "必须保留最新用户意图");
-        assert!(texts.iter().any(|text| text.starts_with(HISTORY_PREFIX)), "更早历史应压成摘要");
+        let texts: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m["content"].as_str())
+            .collect();
+        assert!(
+            texts.contains(&"Latest question: why?"),
+            "必须保留最新用户意图"
+        );
+        assert!(
+            texts.iter().any(|text| text.starts_with(HISTORY_PREFIX)),
+            "更早历史应压成摘要"
+        );
     }
 
     #[test]

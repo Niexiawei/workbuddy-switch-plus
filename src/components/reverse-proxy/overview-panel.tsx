@@ -3,7 +3,7 @@ import { RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Banner, CodeBlock, CopyButton, PanelHeader, StatCard, ToneBadge, fmtNum, fmtRate, fmtTime } from "./rp-shared";
-import { POOL_STATE_LABELS, apiBaseFromService, type RpOverview } from "@/lib/reverse-proxy";
+import { POOL_STATE_LABELS, type RpOverview } from "@/lib/reverse-proxy";
 
 const OUTCOMES: Record<string, string> = {
   success: "完成",
@@ -12,11 +12,14 @@ const OUTCOMES: Record<string, string> = {
   http_error: "请求失败",
 };
 
-export function OverviewPanel({ overview, onReload, onGoto }: {
+export function OverviewPanel({ overview, onReload, onGoto, dataBase }: {
   overview: RpOverview;
   onReload: () => Promise<void>;
   onGoto: (tab: string) => void;
+  /** 数据面地址（含 /v1）。内置页从 Layout 传，old 页传自己的 8788。 */
+  dataBase?: string;
 }) {
+  const resolvedDataBase = dataBase ?? "";
   const { accounts, metrics: m, pool, events } = overview;
   const available = accounts.filter((a) => a.pool_state === "available").length;
   const known = accounts.filter((a) => typeof a.remaining === "number");
@@ -98,7 +101,7 @@ export function OverviewPanel({ overview, onReload, onGoto }: {
             <h3 className="text-sm font-medium">API 接入地址</h3>
             <p className="mt-0.5 text-xs text-muted-foreground">一个入口，连接你的 WorkBuddy 模型。</p>
             <div className="mt-3">
-              <CodeBlock action={<CopyButton value={apiBaseFromService() + "/v1"} label="复制" />}>{apiBaseFromService() + "/v1"}</CodeBlock>
+              <CodeBlock action={<CopyButton value={resolvedDataBase} label="复制" />}>{resolvedDataBase}</CodeBlock>
             </div>
             <Button variant="ghost" size="sm" className="mt-2 px-0" onClick={() => onGoto("guide")}>查看接入指南</Button>
           </section>

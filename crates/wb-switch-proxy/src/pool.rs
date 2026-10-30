@@ -60,17 +60,37 @@ pub struct Selected {
 impl Pool {
     pub fn new(store: Arc<StateStore>, accounts_path: PathBuf) -> Self {
         let mut inner = Inner::default();
-        let status_value = store.get("account_status").unwrap_or_else(|| serde_json::json!({}));
+        let status_value = store
+            .get("account_status")
+            .unwrap_or_else(|| serde_json::json!({}));
         if let Some(status) = status_value.as_object() {
             for (aid, entry) in status {
                 let mut runtime = RuntimeStatus::default();
-                runtime.cooldown_until = entry.get("cooldown_until").and_then(Value::as_f64).unwrap_or(0.0) as u64;
-                runtime.consecutive_fails = entry.get("consecutive_fails").and_then(Value::as_i64).unwrap_or(0);
-                runtime.request_count = entry.get("request_count").and_then(Value::as_i64).unwrap_or(0);
+                runtime.cooldown_until = entry
+                    .get("cooldown_until")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as u64;
+                runtime.consecutive_fails = entry
+                    .get("consecutive_fails")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                runtime.request_count = entry
+                    .get("request_count")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 runtime.remaining = entry.get("remaining").and_then(Value::as_f64);
-                runtime.credits_updated = entry.get("credits_updated").and_then(Value::as_f64).unwrap_or(0.0) as u64;
-                runtime.last_error = entry.get("last_error").and_then(Value::as_str).map(str::to_string);
-                runtime.auth_invalid = entry.get("auth_invalid").and_then(Value::as_bool).unwrap_or(false);
+                runtime.credits_updated = entry
+                    .get("credits_updated")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as u64;
+                runtime.last_error = entry
+                    .get("last_error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                runtime.auth_invalid = entry
+                    .get("auth_invalid")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 inner.status.insert(aid.clone(), runtime);
             }
         }
@@ -98,7 +118,12 @@ impl Pool {
     }
 
     /// 选一个可用账号。`affinity` 通常来自会话 id，缺省时不粘会话。
-    pub fn select(&self, model: &str, affinity: Option<&str>, realm: Option<&str>) -> Result<Selected, PoolError> {
+    pub fn select(
+        &self,
+        model: &str,
+        affinity: Option<&str>,
+        realm: Option<&str>,
+    ) -> Result<Selected, PoolError> {
         let now = self.now();
         let snapshot = self.store.snapshot();
         let overrides = snapshot.get("account_overrides").and_then(Value::as_object);
@@ -130,8 +155,12 @@ impl Pool {
             let Some(record) = raw.iter().find(|row| {
                 row.get("uid").and_then(Value::as_str) == Some(view.uid.as_str())
                     || row.get("id").and_then(Value::as_str) == Some(view.id.as_str())
-            }) else { continue };
-            let Some(token) = record.get("access_token").and_then(Value::as_str) else { continue };
+            }) else {
+                continue;
+            };
+            let Some(token) = record.get("access_token").and_then(Value::as_str) else {
+                continue;
+            };
             if token.trim().is_empty() {
                 continue;
             }
@@ -162,7 +191,11 @@ impl Pool {
         if let Some(key) = affinity {
             if let Some((aid, _)) = inner.bindings.get(key) {
                 if let Some(found) = candidates.iter().find(|(view, _)| &view.uid == aid) {
-                    return Ok(Selected { account: found.0.clone(), token: found.1.clone(), account_id: found.0.uid.clone() });
+                    return Ok(Selected {
+                        account: found.0.clone(),
+                        token: found.1.clone(),
+                        account_id: found.0.uid.clone(),
+                    });
                 }
             }
         }
@@ -183,7 +216,11 @@ impl Pool {
             "least_used" => {
                 let mut best: Option<(usize, i64)> = None;
                 for (index, (view, _)) in candidates.iter().enumerate() {
-                    let count = inner.status.get(&view.uid).map(|status| status.request_count).unwrap_or(0);
+                    let count = inner
+                        .status
+                        .get(&view.uid)
+                        .map(|status| status.request_count)
+                        .unwrap_or(0);
                     if best.map(|(_, best)| count < best).unwrap_or(true) {
                         best = Some((index, count));
                     }
@@ -198,18 +235,30 @@ impl Pool {
         };
 
         let Some(index) = chosen else {
-            return Err(PoolError::NoAccount("当前账号不可用：请检查账号池设置".to_string()));
+            return Err(PoolError::NoAccount(
+                "当前账号不可用：请检查账号池设置".to_string(),
+            ));
         };
         let (view, token) = candidates.swap_remove(index);
         if let Some(key) = affinity {
-            inner.bindings.insert(key.to_string(), (view.uid.clone(), now + 86_400));
+            inner
+                .bindings
+                .insert(key.to_string(), (view.uid.clone(), now + 86_400));
         }
-        Ok(Selected { account: view.clone(), token, account_id: view.uid })
+        Ok(Selected {
+            account: view.clone(),
+            token,
+            account_id: view.uid,
+        })
     }
 
     pub fn acquire(&self, account_id: &str) {
         let mut inner = self.inner.lock().unwrap();
-        inner.status.entry(account_id.to_string()).or_default().inflight += 1;
+        inner
+            .status
+            .entry(account_id.to_string())
+            .or_default()
+            .inflight += 1;
     }
 
     pub fn release(&self, account_id: &str) {
@@ -220,7 +269,13 @@ impl Pool {
     }
 
     /// 记录一次请求结果：成功清失败计数，失败按分类写冷却（账号级 / 模型级）。
-    pub fn record(&self, account_id: &str, status_code: u16, model: &str, failure: Option<&Failure>) {
+    pub fn record(
+        &self,
+        account_id: &str,
+        status_code: u16,
+        model: &str,
+        failure: Option<&Failure>,
+    ) {
         let now = self.now();
         let mut inner = self.inner.lock().unwrap();
         let status = inner.status.entry(account_id.to_string()).or_default();
@@ -230,9 +285,14 @@ impl Pool {
                 status.cooldown_until = status.cooldown_until.max(now + failure.account_cooldown);
             }
             if failure.model_cooldown > 0 {
-                status.model_cooldown.insert(model.to_string(), now + failure.model_cooldown);
+                status
+                    .model_cooldown
+                    .insert(model.to_string(), now + failure.model_cooldown);
             }
-            if matches!(failure.kind, errors::AUTH | errors::QUOTA | errors::RATE_LIMIT | errors::UNAVAILABLE) {
+            if matches!(
+                failure.kind,
+                errors::AUTH | errors::QUOTA | errors::RATE_LIMIT | errors::UNAVAILABLE
+            ) {
                 status.consecutive_fails += 1;
             }
             status.last_error = Some(failure.message.chars().take(200).collect());
@@ -313,7 +373,13 @@ impl Pool {
 
     /// 供测试与排障：某账号的（模型级）冷却截止时间。
     pub fn cooldown_until(&self, account_id: &str) -> u64 {
-        self.inner.lock().unwrap().status.get(account_id).map(|status| status.cooldown_until).unwrap_or(0)
+        self.inner
+            .lock()
+            .unwrap()
+            .status
+            .get(account_id)
+            .map(|status| status.cooldown_until)
+            .unwrap_or(0)
     }
 
     pub fn model_cooldown_until(&self, account_id: &str, model: &str) -> u64 {
@@ -365,7 +431,8 @@ mod tests {
 
     #[test]
     fn manual_routing_uses_active_account() {
-        let (_dir, store, path) = fixture(TWO, json!({"pool": {"routing": "manual"}, "active": "u2"}));
+        let (_dir, store, path) =
+            fixture(TWO, json!({"pool": {"routing": "manual"}, "active": "u2"}));
         let pool = Pool::new(store, path);
         assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
     }
@@ -379,7 +446,7 @@ mod tests {
         let failure = errors::classify(401, "", None);
         pool.record("u1", 401, "m", Some(&failure));
         assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
-        clock.store(2_000, Ordering::Relaxed);   // 冷却过期后重新可选
+        clock.store(2_000, Ordering::Relaxed); // 冷却过期后重新可选
         let picked = pool.select("m", None, None).unwrap();
         assert!(picked.account_id == "u1" || picked.account_id == "u2");
     }
@@ -388,12 +455,21 @@ mod tests {
     fn model_cooldown_only_blocks_that_model() {
         let clock = Arc::new(AtomicU64::new(1_000));
         let c = clock.clone();
-        let (_dir, store, path) = fixture(TWO, json!({"pool": {"routing": "manual"}, "active": "u1"}));
+        let (_dir, store, path) =
+            fixture(TWO, json!({"pool": {"routing": "manual"}, "active": "u1"}));
         let pool = Pool::new(store, path).with_clock(move || c.load(Ordering::Relaxed));
         let failure = errors::classify(400, r#"{"code":11134}"#, None);
         pool.record("u1", 429, "glm-5.3", Some(&failure));
-        assert!(pool.select("glm-5.3", None, None).is_err(), "该模型应被冷却");
-        assert_eq!(pool.select("deepseek-v4-flash", None, None).unwrap().account_id, "u1");
+        assert!(
+            pool.select("glm-5.3", None, None).is_err(),
+            "该模型应被冷却"
+        );
+        assert_eq!(
+            pool.select("deepseek-v4-flash", None, None)
+                .unwrap()
+                .account_id,
+            "u1"
+        );
     }
 
     #[test]
@@ -407,10 +483,13 @@ mod tests {
 
     #[test]
     fn paused_account_is_excluded() {
-        let (_dir, store, path) = fixture(TWO, json!({
-            "pool": {"routing": "manual"}, "active": "u1",
-            "account_overrides": {"u1": {"enabled": false}}
-        }));
+        let (_dir, store, path) = fixture(
+            TWO,
+            json!({
+                "pool": {"routing": "manual"}, "active": "u1",
+                "account_overrides": {"u1": {"enabled": false}}
+            }),
+        );
         let pool = Pool::new(store, path);
         assert!(pool.select("m", None, None).is_err());
     }
@@ -428,27 +507,38 @@ mod tests {
         let rows = pool.rows(&views);
         let row = rows.iter().find(|row| row["uid"] == json!("u1")).unwrap();
         assert_eq!(row["pool_state"], json!("cooling"));
-        assert!(row["last_error"].as_str().unwrap().contains("token expired"));
+        assert!(row["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("token expired"));
         assert!(row["cooldown_until"].as_u64().unwrap() > 1_000);
     }
 
     #[test]
     fn rows_show_cooling_paused_and_exhausted() {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let accounts_json = r#"[
             {"id":"a1","uid":"u1","variant":"cn","access_token":"t1"},
             {"id":"a2","uid":"u2","variant":"cn","access_token":"t2"},
             {"id":"a3","uid":"u3","variant":"cn","access_token":"t3"}
         ]"#;
-        let (_dir, store, path) = fixture(accounts_json, json!({
-            "pool": {"routing": "round_robin"},
-            "account_overrides": {"u2": {"enabled": false}},
-            "account_status": {"u3": {"remaining": 0, "credits_updated": now}}
-        }));
+        let (_dir, store, path) = fixture(
+            accounts_json,
+            json!({
+                "pool": {"routing": "round_robin"},
+                "account_overrides": {"u2": {"enabled": false}},
+                "account_status": {"u3": {"remaining": 0, "credits_updated": now}}
+            }),
+        );
         let pool = Pool::new(store, path);
         let views = accounts::list_at(&_dir.path().join("accounts.json"));
         let rows = pool.rows(&views);
-        let state_of = |uid: &str| rows.iter().find(|row| row["uid"] == json!(uid)).unwrap()["pool_state"].clone();
+        let state_of = |uid: &str| {
+            rows.iter().find(|row| row["uid"] == json!(uid)).unwrap()["pool_state"].clone()
+        };
         assert_eq!(state_of("u1"), json!("available"));
         assert_eq!(state_of("u2"), json!("paused"));
         assert_eq!(state_of("u3"), json!("exhausted"));
@@ -472,7 +562,8 @@ mod tests {
 
     #[test]
     fn only_relogin_account_reports_no_account() {
-        let accounts = r#"[{"id":"a1","uid":"u1","variant":"cn","access_token":"t1","needs_relogin":true}]"#;
+        let accounts =
+            r#"[{"id":"a1","uid":"u1","variant":"cn","access_token":"t1","needs_relogin":true}]"#;
         let (_dir, store, path) = fixture(accounts, json!({"pool": {"routing": "round_robin"}}));
         let pool = Pool::new(store, path);
         assert!(pool.select("m", None, None).is_err());
@@ -480,10 +571,13 @@ mod tests {
 
     #[test]
     fn auth_invalid_status_is_not_selected() {
-        let (_dir, store, path) = fixture(TWO, json!({
-            "pool": {"routing": "round_robin"},
-            "account_status": {"u1": {"auth_invalid": true}}
-        }));
+        let (_dir, store, path) = fixture(
+            TWO,
+            json!({
+                "pool": {"routing": "round_robin"},
+                "account_status": {"u1": {"auth_invalid": true}}
+            }),
+        );
         let pool = Pool::new(store, path);
         for _ in 0..4 {
             assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
@@ -507,11 +601,17 @@ mod tests {
 
     #[test]
     fn exhausted_credits_are_skipped() {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let (_dir, store, path) = fixture(TWO, json!({
-            "pool": {"routing": "round_robin"},
-            "account_status": {"u1": {"remaining": 0, "credits_updated": now}}
-        }));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let (_dir, store, path) = fixture(
+            TWO,
+            json!({
+                "pool": {"routing": "round_robin"},
+                "account_status": {"u1": {"remaining": 0, "credits_updated": now}}
+            }),
+        );
         let pool = Pool::new(store, path);
         assert_eq!(pool.select("m", None, None).unwrap().account_id, "u2");
     }

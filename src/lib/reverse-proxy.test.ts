@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  creditFromMilli, fmtCredit, fmtCreditTime, rp, setHostProvider, type RpAccount,
+  creditFromMilli, fmtCredit, fmtCreditTime, rp, setAdminChannel, type RpAccount,
 } from "./reverse-proxy";
 import { activeNote, fmtLeft, upstreamNote } from "@/components/reverse-proxy/accounts-panel";
 
@@ -16,7 +16,6 @@ import { activeNote, fmtLeft, upstreamNote } from "@/components/reverse-proxy/ac
  * 因此下面 stubGlobal 一个最小实现（get/set/removeItem + clear）。
  */
 
-const TOKEN = "wbt_verify_token";
 
 function stubLocalStorage() {
   const store = new Map<string, string>();
@@ -29,29 +28,15 @@ function stubLocalStorage() {
   return store;
 }
 
-function stubFetch(payload: unknown = { ok: true }) {
-  const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
-    Promise.resolve(
-      new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    ),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-/** 取第 index 次 fetch 调用的 [url, init]。 */
-function call(fetchMock: ReturnType<typeof stubFetch>, index = 0): [string, RequestInit] {
-  return fetchMock.mock.calls[index] as unknown as [string, RequestInit];
-}
-
+type ChannelCall = { method: string; path: string; body: unknown };  let channelCalls: ChannelCall[] = []; let channelReply: unknown = { ok: true }; let channelStatus = 200;  /** 装一个会记录调用的通道桩。payload 与旧 stubFetch 的语义一致。 */ function stubFetch(payload: unknown = { ok: true }) {   channelCalls = [];   channelReply = payload;   channelStatus = 200;   return channelCalls; }  /** 取第 index 次调用的 [path, method, body]。 */ function call(calls: ReturnType<typeof stubFetch>, index = 0): [string, string, unknown] {   const entry = calls[index];   if (!entry) throw new Error(`no call ${index}`);   return [entry.path, entry.method, entry.body]; }
 beforeEach(() => {
   stubLocalStorage();
-// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+// 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setAdminChannel）：
     // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
-    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
+    setAdminChannel(async (method, path, body) => {
+  channelCalls.push({ method, path, body });
+  return { status: channelStatus, body: channelReply };
+});
 });
 
 afterEach(() => {
@@ -63,15 +48,15 @@ describe("活跃上报 API 客户端", () => {
   it("accountAction(active) 打到单账号动作路径，方法 POST 且带 X-Proxy-Host-Token", async () => {
     const fetchMock = stubFetch({ id: "a1", ok: false, sent: 0, count: 1, conversationId: "wb2api-1", message: "凭据无效" });
 
+
     await rp.accountAction("a1", "active");
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/accounts/a1/actions/active");
-    expect(init.method).toBe("POST");
-    expect(init.headers).toMatchObject({ "X-Proxy-Host-Token": TOKEN });
+    expect(fetchMock).toHaveLength(1);
+    const [path, method, body] = call(fetchMock);
+    expect(path).toBe("accounts/a1/actions/active");
+    expect(method).toBe("POST");
     // 动作接口不带 body，全部语义在路径里。
-    expect(init.body).toBeUndefined();
+    expect(body).toBeUndefined();
   });
 
   it("accountAction(active) 的返回形状解出 sent / count / conversationId / streak", async () => {
@@ -91,9 +76,9 @@ describe("活跃上报 API 客户端", () => {
 
     await rp.poolAction("active");
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/pool/actions/active");
-    expect(init.method).toBe("POST");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("pool/actions/active");
+    expect(method).toBe("POST");
   });
 
   it("poolSettings 是 PATCH，body 里三个活跃上报字段一个不少", async () => {
@@ -101,11 +86,11 @@ describe("活跃上报 API 客户端", () => {
 
     await rp.poolSettings({ auto_active: true, active_time: "10:00", active_reports: 3 });
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/pool/settings");
-    expect(init.method).toBe("PATCH");
+    const [path, method, body] = call(fetchMock);
+    expect(path).toBe("pool/settings");
+    expect(method).toBe("PATCH");
     // 逐字段比对：少发一个字段服务端会当「不改」，静默丢配置。
-    expect(JSON.parse(String(init.body))).toEqual({ auto_active: true, active_time: "10:00", active_reports: 3 });
+    expect(body).toEqual({ auto_active: true, active_time: "10:00", active_reports: 3 });
   });
 
   it("checkinLogs(100, active) 的 URL 带 kind=active", async () => {
@@ -113,9 +98,9 @@ describe("活跃上报 API 客户端", () => {
 
     await rp.checkinLogs(100, "active");
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/pool/checkin-logs?limit=100&kind=active");
-    expect(init.method).toBe("GET");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("pool/checkin-logs?limit=100&kind=active");
+    expect(method).toBe("GET");
   });
 
   it("clearCheckinLogs(active) 按类别清空，只清 active", async () => {
@@ -123,9 +108,9 @@ describe("活跃上报 API 客户端", () => {
 
     await rp.clearCheckinLogs("active");
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/pool/checkin-logs/clear?kind=active");
-    expect(init.method).toBe("POST");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("pool/checkin-logs/clear?kind=active");
+    expect(method).toBe("POST");
   });
 
   it("不带 kind 时按类别清空的 URL 不带查询串（清全部）", async () => {
@@ -133,19 +118,12 @@ describe("活跃上报 API 客户端", () => {
 
     await rp.clearCheckinLogs();
 
-    expect(call(fetchMock)[0]).toBe("http://127.0.0.1:8787/admin/api/pool/checkin-logs/clear");
+    expect(call(fetchMock)[0]).toBe("pool/checkin-logs/clear");
   });
 
   it("服务端 400 时抛 RpError 并带上 detail", async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ detail: "active_reports 必须是 1-5 的整数" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+    stubFetch({ detail: "active_reports 必须是 1-5 的整数" });
+    channelStatus = 400;
 
     await expect(rp.poolSettings({ active_reports: 9 })).rejects.toMatchObject({
       status: 400,
@@ -292,9 +270,9 @@ describe("服务设置 API 客户端", () => {
 
     await rp.settings();
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/settings");
-    expect(init.method).toBe("GET");
+    const [path, method] = call(fetchMock);
+    expect(path).toBe("settings");
+    expect(method).toBe("GET");
   });
 
   it("saveSettings 是 PUT，且只发传进来的键（浅合并，不能整份回传）", async () => {
@@ -302,11 +280,11 @@ describe("服务设置 API 客户端", () => {
 
     await rp.saveSettings({ site_name: "工作台" });
 
-    const [url, init] = call(fetchMock);
-    expect(url).toBe("http://127.0.0.1:8787/admin/api/settings");
-    expect(init.method).toBe("PUT");
+    const [path, method, body] = call(fetchMock);
+    expect(path).toBe("settings");
+    expect(method).toBe("PUT");
     // 浅合并：只发改动过的键。整份回传会让两端互相覆盖。
-    expect(JSON.parse(String(init.body))).toEqual({ site_name: "工作台" });
+    expect(body).toEqual({ site_name: "工作台" });
   });
 });
 

@@ -1,6 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { DEFAULT_BASE, getBaseUrl, setBaseUrl } from "@/lib/reverse-proxy";
+/**
+ * old（Python）自己的服务地址。与 `reverse-proxy.ts` 的管理面通道彻底解耦：
+ * 地址跟随刚启动的本地服务（`adoptBaseUrl`），仅当当前地址是回环或默认值时才采纳。
+ */
+let legacyBase = "http://127.0.0.1:8788";
+const DEFAULT_LEGACY_BASE = legacyBase;
+
+function getLegacyBase(): string {
+  return legacyBase;
+}
+
+function setLegacyBase(value: string): void {
+  legacyBase = value.trim().replace(/\/+$/, "") || DEFAULT_LEGACY_BASE;
+}
 
 /**
  * 反代服务的进程管控（仅桌面端可用）。
@@ -136,8 +149,8 @@ export function serviceError(cause: unknown): string {
 
 /** 是否把「服务地址」跟随刚启动的本地服务——仅当当前地址是回环或默认值时。 */
 export function shouldAdoptBaseUrl(): boolean {
-  const current = getBaseUrl();
-  if (!current || current === DEFAULT_BASE) return true;
+  const current = getLegacyBase();
+  if (!current || current === DEFAULT_LEGACY_BASE) return true;
   try {
     const host = new URL(current).hostname;
     return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
@@ -147,5 +160,5 @@ export function shouldAdoptBaseUrl(): boolean {
 }
 
 export function adoptBaseUrl(status: RpServiceStatus): void {
-  if (shouldAdoptBaseUrl()) setBaseUrl(status.baseUrl);
+  if (shouldAdoptBaseUrl()) setLegacyBase(status.baseUrl);
 }

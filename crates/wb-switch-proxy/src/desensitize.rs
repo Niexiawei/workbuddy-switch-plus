@@ -188,7 +188,11 @@ mod tests {
     fn longest_term_wins_and_is_idempotent_after_first_run() {
         let once = desensitize_text("credential stuffing");
         assert!(once.contains('\u{200b}'));
-        assert_eq!(desensitize_text(&once), once, "已插入的零宽字符不应被再次处理");
+        assert_eq!(
+            desensitize_text(&once),
+            once,
+            "已插入的零宽字符不应被再次处理"
+        );
     }
 
     #[test]

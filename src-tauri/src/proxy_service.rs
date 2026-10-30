@@ -1,4 +1,4 @@
-//! 内置反代服务：生命周期、端口策略、宿主令牌。
+//! 内置反代服务：生命周期、端口策略、进程内管理面通道。
 //!
 //! 取代原来的 `proxy_engine`（那个只能在用户点按钮时启动）。现在的契约是：
 //!
@@ -6,17 +6,25 @@
 //! - **随主程序退出**：`RunEvent::Exit` 里 `stop()`，端口必须立刻释放；
 //! - **端口**：默认 8787，用户可自定义（持久化在 `state.json` 的反代设置里），
 //!   被占用时按 +1 逐个试（最多 20 个），偏移结果如实回报给界面；
-//! - **鉴权**：启动时生成一次性宿主令牌（只在内存），前端经 `proxy_admin_token`
-//!   取用，避免第二次登录。
+//! - **管理面**：不在 HTTP 上（数据面是唯一 HTTP 面，见
+//!   `docs/reverse-proxy-internal-plane-plan.md` 附录 C）。前端经
+//!   `proxy_admin_request` 命令 → [`Self::admin_request`] → tower `oneshot`
+//!   直接调用 admin router，进程内是它的唯一入口，天然可信。
 //!
-//! 状态机与句柄都放在 Tauri 托管状态里，命令与后台任务共用同一把锁。
+//! 状态机、句柄与 admin router 都放在 Tauri 托管状态里，命令与后台任务共用同一把锁
+//! （取 `Arc<Router>` 用短锁，`oneshot` 在锁外 await）。
 
+use std::sync::Arc;
 use std::sync::Mutex;
 
+use axum::Router as AxumRouter;
 use serde_json::{json, Value};
+use tower::ServiceExt as _;
 use wb_switch_proxy::config::{ProxyConfig, DEFAULT_PORT};
-use wb_switch_proxy::hostauth::HostAuth;
 use wb_switch_proxy::{ProxyHandle, StartError, StateStore};
+
+/// 管理面响应体读入上限。request-logs / audit-logs 大分页的最大观测值再留 4 倍余量。
+const MAX_ADMIN_BODY: usize = 8 * 1024 * 1024;
 
 /// 服务的运行阶段。界面据此渲染「启动中 / 在跑 / 停了 / 起不来」。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,8 +51,9 @@ struct Inner {
     phase: Phase,
     /// 最后一次尝试的期望端口（配置里的值）。
     desired_port: u16,
-    /// 宿主令牌。随进程生命周期存在，退出即失效。
-    token: String,
+    /// 管理面子 router（P0 瘦身后的形态，已 state 化，可直接 oneshot）。
+    /// 与 handle 同锁同生命周期：start 装配、stop 清空。
+    admin_router: Option<Arc<AxumRouter>>,
 }
 
 pub struct ProxyService {
@@ -64,7 +73,7 @@ impl ProxyService {
                 handle: None,
                 phase: Phase::Stopped,
                 desired_port: DEFAULT_PORT,
-                token: HostAuth::random_token(),
+                admin_router: None,
             }),
         }
     }
@@ -82,7 +91,6 @@ impl ProxyService {
             "phase": inner.phase.as_str(),
             "desiredPort": desired,
             "portShifted": shifted,
-            "hostToken": inner.token,
         });
         if let Some(port) = port {
             status["port"] = json!(port);
@@ -98,11 +106,6 @@ impl ProxyService {
             status["error"] = json!(reason);
         }
         status
-    }
-
-    /// 宿主令牌：前端每次请求前取（有缓存、过期重取）。
-    pub fn host_token(&self) -> String {
-        self.inner.lock().unwrap().token.clone()
     }
 
     /// 启动（幂等）。已在跑则直接返回当前状态。
@@ -128,19 +131,22 @@ impl ProxyService {
             .map_err(|error| format!("无法创建反代数据目录：{error}"))?;
 
         let desired = cfg.port;
-        let token = self.host_token();
         {
             let mut inner = self.inner.lock().unwrap();
             inner.phase = Phase::Starting;
             inner.desired_port = desired;
         }
 
-        let auth = HostAuth::with_token(token);
-        match ProxyHandle::start_with_auth(cfg, store, auth).await {
+        // 应用状态只有一份：数据面监听与管理面通道共用。
+        let state = wb_switch_proxy::build_state(cfg.clone(), store);
+        match ProxyHandle::start_with_state(cfg, state.clone()).await {
             Ok(handle) => {
                 let port = handle.addr().port();
+                // admin 子 router：不经 nest，URI 不带 /admin/api 前缀。
+                let admin = Arc::new(wb_switch_proxy::admin::router().with_state(state));
                 let mut inner = self.inner.lock().unwrap();
                 inner.handle = Some(handle);
+                inner.admin_router = Some(admin);
                 inner.phase = Phase::Running { port, desired };
                 drop(inner);
                 Ok(self.status())
@@ -159,6 +165,46 @@ impl ProxyService {
                 Err(reason)
             }
         }
+    }
+
+    /// 进程内管理面调用：`{method, path, body}` → `{status, body}`。
+    ///
+    /// 语义约定（见计划文档 §3.1 / P1.3）：
+    /// - `Ok(reply)`：通道本身通了。`reply["status"] >= 400` 时由**前端**判 status
+    ///   抛 `RpError`（keys 面板的 409 分支、白名单 403 文案分支零改动）；
+    /// - `Err(message)`：通道级故障（服务未运行、请求构造失败、body 超限）。
+    ///   Tauri 会把它变成 rejected promise，前端 catch 后抛 `RpError("...", 0)`，
+    ///   与现有「连接失败」语义对齐。
+    pub async fn admin_request(
+        &self,
+        method: String,
+        path: String,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
+        // 短锁取 router，oneshot 在锁外 await——否则一个慢查询会卡死 status/stop。
+        let router = {
+            let inner = self.inner.lock().unwrap();
+            match (&inner.admin_router, &inner.phase) {
+                (Some(router), Phase::Running { .. }) => Some(router.clone()),
+                _ => None,
+            }
+        };
+        let Some(router) = router else {
+            return Err("内置服务未运行".to_string());
+        };
+
+        let request = build_admin_request(method, path, body)?;
+        // Arc<Router> 解一层：oneshot 消费 self，Clone 出来的 Router 才能被 move。
+        let response = (*router).clone()
+            .oneshot(request)
+            .await
+            .map_err(|error| format!("管理面调用失败：{error}"))?;
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_ADMIN_BODY)
+            .await
+            .map_err(|error| format!("管理面响应读取失败：{error}"))?;
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        Ok(json!({ "status": status, "body": body }))
     }
 
     /// 改期望端口并立即重绑（停机 + 启动）。端口写进 `state.json`，下次启动沿用。
@@ -200,6 +246,9 @@ impl ProxyService {
             if handle.is_some() {
                 inner.phase = Phase::Stopped;
             }
+            // admin router 与 handle 同生命周期：停机即失效，
+            // 通道在 router 为 None 时如实报「服务未运行」。
+            inner.admin_router = None;
             handle
         };
         if let Some(handle) = handle {
@@ -218,6 +267,7 @@ impl ProxyService {
             if handle.is_some() {
                 inner.phase = Phase::Stopped;
             }
+            inner.admin_router = None;
             handle
         };
         let Some(handle) = handle else { return };
@@ -239,6 +289,44 @@ impl ProxyService {
     }
 }
 
+/// 构造发往 admin router 的请求。
+///
+/// path 是 `rp.*` 语义的相对路径（如 `overview`、`keys/k1`），**不带** `/admin/api`
+/// 前缀——admin router 未经 nest，前缀从此不存在，而不是换了个地方拼。
+fn build_admin_request(
+    method: String,
+    path: String,
+    body: Option<Value>,
+) -> Result<axum::http::Request<axum::body::Body>, String> {
+    use axum::http::Method;
+
+    // path 清洗（纵深防御；路由匹配是第二道闸）。
+    let trimmed = path.trim().trim_start_matches('/');
+    if trimmed.is_empty()
+        || trimmed.contains("..")
+        || trimmed.contains("//")
+        || !trimmed.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
+        || !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == '=' || c == '&')
+    {
+        return Err(format!("非法的管理面路径：{path}"));
+    }
+    let uri = format!("/{trimmed}");
+    let http_method = Method::from_bytes(method.to_uppercase().as_bytes())
+        .map_err(|error| format!("非法的 HTTP 方法 {method}：{error}"))?;
+    let mut builder = axum::http::Request::builder().method(http_method).uri(uri);
+    let payload = match body {
+        Some(value) if !value.is_null() => {
+            builder = builder.header("content-type", "application/json");
+            serde_json::to_vec(&value)
+                .map_err(|error| format!("请求体序列化失败：{error}"))?
+        }
+        _ => Vec::new(),
+    };
+    builder
+        .body(axum::body::Body::from(payload))
+        .map_err(|error| format!("请求构造失败：{error}"))
+}
+
 /// `state.json` 里保存的用户端口设置：`settings.reverse_proxy.port`。
 fn saved_port(store: &StateStore) -> Option<u16> {
     store
@@ -253,6 +341,7 @@ fn saved_port(store: &StateStore) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     /// 端口设置的读取：只看 `settings.reverse_proxy.port`，不接受 0 与越界值。
     fn port_of(value: Value) -> Option<u16> {
@@ -281,24 +370,15 @@ mod tests {
     }
 
     #[test]
-    fn fresh_service_is_stopped_and_has_token() {
+    fn fresh_service_is_stopped() {
         let service = ProxyService::new();
         let status = service.status();
         assert_eq!(status["running"], json!(false));
         assert_eq!(status["phase"], json!("stopped"));
         assert_eq!(status["engine"], json!("rust"));
         assert_eq!(status["desiredPort"], json!(DEFAULT_PORT));
-        let token = status["hostToken"].as_str().unwrap();
-        assert!(token.starts_with("wbh_"), "宿主令牌要有可辨认的前缀");
-        assert_eq!(service.host_token(), token);
-    }
-
-    #[test]
-    fn token_is_stable_across_status_reads() {
-        let service = ProxyService::new();
-        let first = service.status()["hostToken"].as_str().unwrap().to_string();
-        let second = service.status()["hostToken"].as_str().unwrap().to_string();
-        assert_eq!(first, second, "令牌在进程内必须稳定，否则前端缓存会失效");
+        // hostToken 已随管理面 HTTP 退役（计划文档附录 C），不再出现在状态里。
+        assert!(status.get("hostToken").is_none());
     }
 
     #[test]
@@ -307,5 +387,124 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let status = runtime.block_on(service.stop());
         assert_eq!(status["running"], json!(false));
+    }
+
+    // ── admin_request 通道 ────────────────────────────────────────────
+
+    fn temp_state() -> (tempfile::TempDir, StateStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("accounts.json"),
+            r#"[{"id":"a1","uid":"u1","variant":"cn"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("state.json"),
+            json!({"keys": {"k1": {"name": "k", "hash": "x", "secret": "sk-test", "enabled": true, "realm": "cn"}}}).to_string(),
+        )
+        .unwrap();
+        let store = StateStore::open_writable(root.join("state.json")).unwrap();
+        // dir 泄漏给测试进程持有（TempDir drop 即清理，测试进程短命无所谓）。
+        std::mem::forget(dir);
+        (tempfile::tempdir().unwrap(), store)
+    }
+
+    fn running_service() -> (ProxyService, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("accounts.json"),
+            r#"[{"id":"a1","uid":"u1","variant":"cn"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("state.json"),
+            json!({"keys": {"k1": {"name": "k", "hash": "x", "secret": "sk-test", "enabled": true, "realm": "cn"}}}).to_string(),
+        )
+        .unwrap();
+        let service = ProxyService::new();
+        // 直接装 router（不真 bind 端口）：通道行为与 handle 生命周期无关。
+        let cfg = ProxyConfig::for_user();
+        let store = StateStore::open_writable(cfg.state_path()).unwrap_or_else(|_| StateStore::open_writable(root.join("state.json")).unwrap());
+        let state = wb_switch_proxy::build_state(cfg, store);
+        let admin = Arc::new(wb_switch_proxy::admin::router().with_state(state));
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.admin_router = Some(admin);
+            inner.phase = Phase::Running { port: 8787, desired: 8787 };
+        }
+        std::mem::forget(dir);
+        (service, root)
+    }
+
+    #[tokio::test]
+    async fn admin_request_returns_200_for_overview() {
+        let (service, _root) = running_service();
+        let reply = service.admin_request("GET".into(), "overview".into(), None).await.unwrap();
+        assert_eq!(reply["status"], json!(200));
+        assert_eq!(reply["body"]["keys"].as_array().map(|rows| rows.len()), Some(1));
+    }
+
+    #[tokio::test]
+    async fn admin_request_passes_through_4xx() {
+        let (service, _root) = running_service();
+        let reply = service.admin_request("GET".into(), "no/such/path".into(), None).await.unwrap();
+        assert_eq!(reply["status"], json!(404), "4xx 由前端判 status，Rust 侧不走 Err");
+    }
+
+    #[tokio::test]
+    async fn admin_request_fails_when_not_running() {
+        let service = ProxyService::new();
+        let error = service.admin_request("GET".into(), "overview".into(), None).await.unwrap_err();
+        assert!(error.contains("未运行"), "通道级故障才 Err：{error}");
+    }
+
+    #[tokio::test]
+    async fn admin_request_rejects_bad_path() {
+        let (service, _root) = running_service();
+        for bad in ["../escape", "a//b", "", "ok path with space"] {
+            assert!(service.admin_request("GET".into(), bad.into(), None).await.is_err(), "{bad} 应被清洗拦截");
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_request_sends_json_body() {
+        let (service, _root) = running_service();
+        // pool/settings 校验非法值 → BAD_REQUEST，证明 body 已到达 handler。
+        let reply = service
+            .admin_request("PATCH".into(), "pool/settings".into(), Some(json!({"routing": "nonsense"})))
+            .await
+            .unwrap();
+        assert_eq!(reply["status"], json!(400));
+    }
+
+    #[tokio::test]
+    async fn stop_clears_admin_router() {
+        let (service, _root) = running_service();
+        service.stop().await;
+        let error = service.admin_request("GET".into(), "overview".into(), None).await.unwrap_err();
+        assert!(error.contains("未运行"));
+    }
+
+    /// build_admin_request 的形状单测（不依赖运行态）。
+    #[test]
+    fn build_request_shapes() {
+        let get = build_admin_request("get".into(), "/overview".into(), None).unwrap();
+        assert_eq!(get.method(), "GET");
+        assert_eq!(get.uri(), "/overview");
+
+        let post = build_admin_request("POST".into(), "keys".into(), Some(json!({"name": "x"}))).unwrap();
+        assert_eq!(post.uri(), "/keys");
+        assert_eq!(post.headers().get("content-type").unwrap(), "application/json");
+    }
+
+    /// 保留：ServiceExt 引用消费（oneshot 已在 admin_request 内使用，
+    /// 这里防止 cfg(test) 下 unused import 警告波动）。
+    #[allow(dead_code)]
+    fn _service_ext_marker<R>(router: AxumRouter, request: axum::http::Request<axum::body::Body>) -> impl std::future::Future<Output = ()> {
+        async move {
+            let _ = tower::Service::<axum::http::Request<axum::body::Body>>::call(&mut router.clone(), request).await;
+        }
     }
 }

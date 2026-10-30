@@ -1,19 +1,16 @@
 /**
  * 反代服务管理端 API 客户端（codebuddy2api + switch 账号库）。
  *
- * **地址与凭据都由宿主提供，不落 localStorage：**
- *   · 地址来自 `proxy_service_status` 的 `baseUrl`（端口可能因占用而 +1）；
- *   · 凭据是桌面端进程内存里的宿主令牌，每次请求前经 `proxy_admin_token` 取。
+ * **传输层是进程内通道，不是 HTTP**：管理面已不在 HTTP 上（数据面是唯一对外
+ * HTTP 面，见 docs/reverse-proxy-internal-plane-plan.md 附录 C）。`request()`
+ * 经 `setAdminChannel` 装配的通道（Tauri invoke → Rust tower oneshot）调用
+ * admin router；`4xx/5xx` 语义原样保留（`RpError.status`），组件层零改动。
  *
- * 这样做的原因见 `docs/reverse-proxy-integration-plan.md` §3.3：桌面端用户已经
- * 登录过主程序，不该在控制台再输一次密码；而 localStorage 里留明文令牌，
- * 等于把管理面凭据交给任何能在这台机器上开 devtools 的人。
+ * 前端不再持有任何地址与凭据：base/token 概念已随管理面 HTTP 一起退役，
+ * 旧 localStorage 键（wb.rp.token / wb.rp.base / wb.rp.engine）不再读写。
  */
 
-const USER_KEY = "wb.rp.user";
-
-/** 尚未拿到宿主状态时的兜底地址（仅用于极端情况下的错误提示，不参与请求）。 */
-export const DEFAULT_BASE = "http://127.0.0.1:8787";
+import { invoke } from "@tauri-apps/api/core";
 
 export class RpError extends Error {
   status: number;
@@ -24,146 +21,69 @@ export class RpError extends Error {
   }
 }
 
-function read(key: string, fallback = ""): string {
+/**
+ * 管理面通道：`(method, path, body)` → `{status, body}`。
+ *
+ * path 是 `rp.*` 语义的相对路径（如 `overview`、`keys/k1`），**不带**
+ * `/admin/api` 前缀——admin router 未经 nest，前缀在 Rust 侧也不存在。
+ * `status >= 400` 由本模块的 `request()` 抛 `RpError`；通道级故障（服务未运行）
+ * 以 reject 形式出现，转成 `status === 0` 的 RpError。
+ */
+export type AdminChannel = (
+  method: string,
+  path: string,
+  body?: unknown,
+) => Promise<{ status: number; body: unknown }>;
+
+let channel: AdminChannel | null = null;
+
+/** 由布局层一次性装配；传 null 回到「通道未就绪」（所有请求抛 status 0）。 */
+export function setAdminChannel(next: AdminChannel | null): void {
+  channel = next;
+}
+
+/** 供测试与排查用：当前通道是否已装配。 */
+export function adminChannelReady(): boolean {
+  return channel !== null;
+}
+
+async function request<T>(
+  path: string,
+  options: { method?: string; body?: unknown; auth?: boolean } = {},
+): Promise<T> {
+  const call = channel;
+  if (!call) throw new RpError("管理面通道未就绪", 0);
+  let reply: { status: number; body: unknown };
   try {
-    return localStorage.getItem(key) ?? fallback;
+    reply = await call(options.method ?? "GET", path, options.body);
   } catch {
-    return fallback;
+    // 通道级故障（服务停机 / invoke 失败）：与旧「连接不上」同一文案。
+    throw new RpError("无法连接反代服务，请确认它已启动", 0);
   }
-}
-
-function write(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    /* localStorage 不可用时静默降级（内存会话） */
+  if (reply.status >= 400) {
+    throw new RpError(extractDetail(reply.body) || `请求失败（HTTP ${reply.status}）`, reply.status);
   }
+  return reply.body as T;
 }
 
-/**
- * 当前服务地址与宿主令牌。
- *
- * 两者都由桌面端注入（见 `proxy-service.ts`），页面自身不再读写 localStorage。
- * 用一个可替换的「provider」而不是直接 import invoke，是为了让 `reverse-proxy.test.ts`
- * 能在 node 环境下跑：测试替换成固定值即可断言请求打到了哪里。
- */
-type HostProvider = {
-  base: () => string;
-  token: () => Promise<string> | string;
-};
-
-let host: HostProvider = {
-  base: () => DEFAULT_BASE,
-  token: () => "",
-};
-
-/** 由布局层在拿到 `proxy_service_status` 后调用。传 null 表示回到未连接状态。 */
-export function setHostProvider(next: HostProvider | null): void {
-  host = next ?? { base: () => DEFAULT_BASE, token: () => "" };
-}
-
-export function getBaseUrl(): string {
-  return host.base().replace(/\/+$/, "");
-}
-
-/**
- * 兼容旧调用点：只影响「地址」的那部分（跳过登录门、指向另一台服务）。
- *
- * 新代码不该用它——内置服务的地址由宿主决定，前端硬改只会指向一个没人监听
- * 的端口。保留导出只是为了让还没迁完的调用方不至于编译失败。
- */
-export function setBaseUrl(value: string): void {
-  const base = value.trim().replace(/\/+$/, "");
-  host = { ...host, base: () => base };
-}
-
-/** 宿主令牌。异步，因为桌面端要经 IPC 取。 */
-export function getToken(): Promise<string> {
-  return Promise.resolve(host.token());
-}
-
-/**
- * 兼容旧调用点：单令牌形态下没有「设置令牌」这回事。
- *
- * 桌面端令牌由宿主持有，页面既不该缓存也不该续期，所以这里只保留签名，
- * 调用它等价于「忘掉本地缓存的值」。
- */
-export function setToken(_value: string | null): void {
-  /* 令牌由宿主持有，页面不存；保留函数是为了让旧调用点逐步退场 */
-}
-
-export function getSessionUser(): RpSession | null {
-  const raw = read(USER_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as RpSession;
-  } catch {
-    return null;
-  }
-}
-
-export function setSessionUser(value: RpSession | null): void {
-  write(USER_KEY, value ? JSON.stringify(value) : null);
-}
-
-/**
- * 发一次管理面请求。
- *
- * `X-Proxy-Host-Token` 是 Rust 管理面认的宿主凭据（`crates/wb-switch-proxy/src/hostauth.rs`）；
- * 401 时自动重取一次——令牌在宿主那边可能已经换过（换了端口会重新生成）。
- */
-async function request<T>(path: string, options: { method?: string; body?: unknown; auth?: boolean } = {}): Promise<T> {
-  const method = options.method ?? "GET";
-  const url = getBaseUrl() + "/admin/api/" + path.replace(/^\/+/, "");
-  const send = async (token: string): Promise<Response> => {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (options.auth !== false && token) headers["X-Proxy-Host-Token"] = token;
-    return fetch(url, {
+/** 布局层用的默认通道实现：直接走 Tauri 命令。 */
+export function defaultAdminChannel(): AdminChannel {
+  return (method, path, body) =>
+    invoke<{ status: number; body: unknown }>("proxy_admin_request", {
       method,
-      headers,
-      credentials: "omit",
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      path,
+      body: body ?? null,
     });
-  };
-
-  let response: Response;
-  try {
-    response = await send(await getToken());
-  } catch {
-    throw new RpError("无法连接反代服务，请确认它已启动且地址正确", 0);
-  }
-  if (response.status === 401 && options.auth !== false) {
-    // 令牌可能过期/换过：重取一次再试。仍 401 才如实报错，避免无限重试。
-    try {
-      response = await send(await getToken());
-    } catch {
-      throw new RpError("无法连接反代服务，请确认它已启动且地址正确", 0);
-    }
-  }
-  let data: unknown = null;
-  try {
-    data = await response.json();
-  } catch {
-    if (!response.ok) throw new RpError(`服务返回异常（HTTP ${response.status}）`, response.status);
-    return undefined as T;
-  }
-  if (!response.ok) {
-    throw new RpError(extractDetail(data) || `请求失败（HTTP ${response.status}）`, response.status);
-  }
-  return data as T;
 }
 
 function extractDetail(data: unknown): string {
   if (!data || typeof data !== "object") return "";
   const detail = (data as { detail?: unknown }).detail;
   if (typeof detail === "string") return detail;
-  if (detail && typeof detail === "object") {
-    const err = (detail as { error?: { message?: string } }).error;
-    if (err && typeof err.message === "string") return err.message;
-    return JSON.stringify(detail);
-  }
-  return "";
+  if (detail && typeof detail !== "object") return "";
+  const err = (detail as { error?: { message?: string } }).error;
+  if (err && typeof err.message === "string") return err.message;
+  return JSON.stringify(detail);
 }
 
 // ── 类型 ──────────────────────────────────────────────────────────────
@@ -767,23 +687,10 @@ export function pickAlertPatch(form: Partial<RpAlerts>): Partial<RpAlerts> {
 }
 
 // ── 接口 ──────────────────────────────────────────────────────────────
+// 会话/登录端点（login* / session / logout / revokeSessions）与
+// users/tokens/audit-logs 已随管理面 HTTP 一起移除（计划文档附录 B/C）；
+// rp 的调用面 = P0 瘦身后 admin router 的存活端点。
 export const rp = {
-  /** 多用户登录（用户名 + 口令，PBKDF2）。 */
-  login: (username: string, password: string) =>
-    request<{ csrf: string; token: string }>("login", { method: "POST", body: { username, password }, auth: false }),
-  /** 旧形态：单密钥 ADMIN_KEY 登录（若服务端开启）。 */
-  loginKey: (key: string) =>
-    request<{ csrf: string; token: string }>("login", { method: "POST", body: { key }, auth: false }),
-  /** 用「管理令牌」（wbt_…）换一个会话。换来的会话仍然进不了改用户/改令牌那类接口。 */
-  loginToken: (token: string) =>
-    request<{ csrf: string; token: string }>("login", { method: "POST", body: { token }, auth: false }),
-  /** 服务端告诉登录页哪些入口在当前部署下真的可用（不需要登录）。 */
-  loginOptions: () =>
-    request<{ legacy_key: boolean; tokens: boolean }>("login-options", { auth: false }),
-  session: () => request<RpSession & { csrf: string }>("session"),
-  logout: () => request<{ ok: boolean }>("logout", { method: "POST" }),
-  revokeSessions: () => request<{ ok: boolean; revoked: number }>("sessions/revoke", { method: "POST" }),
-
   overview: () => request<RpOverview>("overview"),
   poolSummary: () => request<{ accounts: RpAccount[]; pool: RpPool }>("pool/summary"),
   accountAction: (id: string, action: "refresh" | "status" | "checkin" | "travel" | "travel-claim" | "active") =>
@@ -832,18 +739,28 @@ export const rp = {
   revokeCliKey: () => request<{ ok: boolean; revoked: number }>("cli/key", { method: "DELETE" }),
   checkModels: (models: string[]) => request<{ checked: boolean; unknown: string[] }>("keys/check-models", { method: "POST", body: { models } }),
 
+  // ── 以下 10 个方法仅供「反代服务old」（Python HTTP）的面板组件使用 ──
+  // 对应的 Rust 端点已随管理面 HTTP 移除（附录 B）；内置控制台不再有这些页签。
+  /** @deprecated 仅 old 页使用 */
   listTokens: () => request<RpToken[]>("tokens"),
+  /** @deprecated 仅 old 页使用 */
   createToken: (name: string, scope: string, expires_at?: number | null) =>
     request<RpToken & { token: string }>("tokens", { method: "POST", body: { name, scope, expires_at } }),
+  /** @deprecated 仅 old 页使用 */
   updateToken: (id: string, body: { name?: string; scope?: string; enabled?: boolean; expires_at?: number | null }) =>
     request<RpToken>(`tokens/${id}`, { method: "PATCH", body }),
+  /** @deprecated 仅 old 页使用 */
   deleteToken: (id: string) => request<{ ok: boolean }>(`tokens/${id}`, { method: "DELETE" }),
 
+  /** @deprecated 仅 old 页使用 */
   listUsers: () => request<RpUser[]>("users"),
+  /** @deprecated 仅 old 页使用 */
   addUser: (username: string, password: string, role: string) =>
     request<RpUser>("users", { method: "POST", body: { username, password, role } }),
+  /** @deprecated 仅 old 页使用 */
   updateUser: (username: string, body: { password?: string; role?: string }) =>
     request<RpUser & { sessions_revoked?: boolean; relogin_required?: boolean }>(`users/${encodeURIComponent(username)}`, { method: "PATCH", body }),
+  /** @deprecated 仅 old 页使用 */
   deleteUser: (username: string) => request<{ ok: boolean }>(`users/${encodeURIComponent(username)}`, { method: "DELETE" }),
 
   securityConfig: () => request<RpSecurityConfig>("security/config"),
@@ -854,8 +771,6 @@ export const rp = {
   deleteIpRule: (id: string) => request<{ ok: boolean }>(`security/rules/${id}`, { method: "DELETE" }),
   ipLogs: (limit = 200) => request<RpIpLog[]>(`security/logs?limit=${limit}`),
   clearIpLogs: () => request<{ ok: boolean }>("security/logs/clear", { method: "POST" }),
-  auditLogs: (limit = 200) => request<RpAuditLog[]>(`audit-logs?limit=${limit}`),
-  clearAuditLogs: () => request<{ ok: boolean; removed: number }>("audit-logs/clear", { method: "POST" }),
 
   oauthStart: (name?: string, realm?: RpRealm, region?: string) =>
     request<{ id: string; url: string; expires_at: number; realm?: string; region?: string }>(
@@ -1037,10 +952,14 @@ export const ROUTING_LABELS: Record<string, { label: string; desc: string }> = {
   },
 };
 
-export function apiBaseFromService(): string {
-  return getBaseUrl().replace(/\/+$/, "");
+/**
+ * 数据面 base（展示用）。改由调用方传入 `proxy_service_status` 的 baseUrl——
+ * 管理面通道与地址无关，这两个函数只服务「给外部 CLI 看的地址」展示。
+ */
+export function apiBaseFromService(baseUrl: string | null | undefined): string {
+  return (baseUrl ?? "").replace(/\/+$/, "");
 }
 
-export function modelsEndpoint(): string {
-  return apiBaseFromService() + "/v1";
+export function modelsEndpoint(baseUrl: string | null | undefined): string {
+  return apiBaseFromService(baseUrl) + "/v1";
 }

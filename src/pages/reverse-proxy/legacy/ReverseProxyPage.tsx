@@ -9,9 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  RpError, getBaseUrl, getToken, rp, setBaseUrl, setSessionUser, setToken,
   type RpOverview, type RpSession, type RpToken, type RpUser,
 } from "@/lib/reverse-proxy";
+import { LegacyError, legacyBaseUrl, legacyRequest, hasLegacySession, setLegacySession } from "./legacy-admin";
 import { saveLogin, savedLogin, serviceSupported, type RpSavedLogin } from "@/lib/reverse-proxy-service";
 // 引擎切换已退场（决策 4）：这一页只剩 Python「反代服务old」一条链路。
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
@@ -122,32 +122,31 @@ export default function ReverseProxyPage() {
   const visibleRef = useRef(true);
 
   const loadOverview = useCallback(async () => {
-    setOverview(await rp.overview());
+    setOverview(await legacyRequest<RpOverview>("overview"));
   }, []);
 
   const loadAccess = useCallback(async () => {
-    const [t, u] = await Promise.all([rp.listTokens().catch(() => []), rp.listUsers().catch(() => [])]);
+    const [t, u] = await Promise.all([legacyRequest<RpToken[]>("tokens").catch(() => []), legacyRequest<RpUser[]>("users").catch(() => [])]);
     setTokens(t);
     setUsers(u);
   }, []);
 
   const enter = useCallback(async () => {
-    const s = await rp.session();
+    const s = await legacyRequest<RpSession & { csrf: string }>("session");
     setSession({ username: s.username, role: s.role, via: s.via });
-    setSessionUser({ username: s.username, role: s.role });
     await loadOverview();
     void loadAccess();
     setPhase("ready");
   }, [loadOverview, loadAccess]);
 
   const bootstrap = useCallback(async () => {
-    if (!getToken()) { setPhase("gate"); return; }
+    if (!hasLegacySession()) { setPhase("gate"); return; }
     setPhase("checking");
     try {
       await enter();
     } catch (cause) {
-      if (cause instanceof RpError && cause.status === 401) setToken(null);
-      else if (cause instanceof RpError && cause.status === 0) toast.error(cause.message);
+      if (cause instanceof LegacyError && cause.status === 401) setLegacySession(null);
+      else if (cause instanceof LegacyError && cause.status === 0) toast.error(cause.message);
       setPhase("gate");
     }
   }, [enter]);
@@ -193,15 +192,14 @@ export default function ReverseProxyPage() {
     // 同步清本地 → 同步立「禁止自动登录」标记 → 异步清保存的凭据 / 通知服务端。
     void performSignOut({
       clearLocal: () => {
-        setToken(null);
-        setSessionUser(null);
+        setLegacySession(null);
         setSession(null);
         setOverview(null);
         setPhase("gate");
       },
       blockAutoLogin: () => { /* 标记由 performSignOut 自己置位 */ },
       clearSavedLogin: () => saveLogin(null),
-      notifyServer: () => rp.logout(),
+      notifyServer: () => legacyRequest("logout", { method: "POST" }),
     });
   }
 
@@ -258,8 +256,8 @@ export default function ReverseProxyPage() {
       <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border/70 bg-card px-4 py-3 text-xs">
         <span className="flex items-center gap-2">
           <span className="text-muted-foreground">服务地址</span>
-          <code className="font-mono">{getBaseUrl()}</code>
-          <CopyButton value={getBaseUrl()} label="" className="h-6 px-2" />
+          <code className="font-mono">{legacyBaseUrl()}</code>
+          <CopyButton value={legacyBaseUrl()} label="" className="h-6 px-2" />
         </span>
         <StatusFact label="已运行" value={fmtUptime(overview.uptime)} />
         <StatusFact label="账号" value={`${enabled} / ${overview.accounts.length} 启用`} />
@@ -302,7 +300,7 @@ export default function ReverseProxyPage() {
 
         <div className="min-w-0">
           <TabsContent value="overview" className="mt-0">
-            <OverviewPanel overview={overview} onReload={loadOverview} onGoto={setTab} />
+            <OverviewPanel overview={overview} onReload={loadOverview} onGoto={setTab} dataBase={`${legacyBaseUrl()}/v1`} />
           </TabsContent>
           <TabsContent value="logs" className="mt-0">
             {/* 分组归属要靠 overview 里的 keys[].groups 与 groups[]（id→name）；
@@ -417,7 +415,7 @@ type LoginMode = "user" | "key" | "token";
 
 function LoginCard({ checking, onSuccess }: { checking: boolean; onSuccess: () => void }) {
   const desktop = serviceSupported();
-  const [base, setBase] = useState(getBaseUrl());
+  const [base, setBase] = useState(legacyBaseUrl());
   const [mode, setMode] = useState<LoginMode>("user");
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
@@ -441,13 +439,13 @@ function LoginCard({ checking, onSuccess }: { checking: boolean; onSuccess: () =
 
     setBusy(true);
     setError("");
-    setBaseUrl(base);
+    // base 与 token 一起登记（legacy-admin 是模块级单例） // 登录成功即设置新会话（token 在下一行传入）
     try {
       const result =
-        target === "key" ? await rp.loginKey(key)
-          : target === "token" ? await rp.loginToken(token)
-            : await rp.login(user, pass);
-      setToken(result.token);
+        target === "key" ? await legacyRequest<{ csrf: string; token: string }>("login", { method: "POST", body: { key } })
+          : target === "token" ? await legacyRequest<{ csrf: string; token: string }>("login", { method: "POST", body: { token } })
+            : await legacyRequest<{ csrf: string; token: string }>("login", { method: "POST", body: { username: user, password: pass } });
+      setLegacySession(result.token, base);
       // 登录成功才写凭据；没勾选则顺手清掉旧文件（「取消记住」要立刻生效）。
       // 管理令牌不动那个文件：它是长期有效的凭据，不该顶掉用户存好的账号口令。
       if (target !== "token") {
@@ -462,7 +460,7 @@ function LoginCard({ checking, onSuccess }: { checking: boolean; onSuccess: () =
       setError(cause instanceof Error ? cause.message : String(cause));
       // 自动读出来的口令已经失效（服务换过口令 / 换过服务）→ 清掉，
       // 免得每次进这个页面都白试一次。
-      if (override?.remember && cause instanceof RpError && cause.status === 401) {
+      if (override?.remember && cause instanceof LegacyError && cause.status === 401) {
         setRemember(false);
         void saveLogin(null).catch(() => undefined);
       }
@@ -478,7 +476,7 @@ function LoginCard({ checking, onSuccess }: { checking: boolean; onSuccess: () =
     let alive = true;
     void (async () => {
       try {
-        const result = await rp.loginOptions();
+        const result = await legacyRequest<{ legacy_key: boolean; tokens: boolean }>("login-options");
         if (alive) setOptions(result);
       } catch {
         /* 探测失败：保持默认，全部可用 */

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 
-import { rp, type RpAccount, setHostProvider } from "./reverse-proxy";
+import { rp, type RpAccount, setAdminChannel } from "./reverse-proxy";
 
 /**
  * 账号限速（流量整形）的前端契约。
@@ -17,7 +17,6 @@ import { rp, type RpAccount, setHostProvider } from "./reverse-proxy";
  * 全池统一时挂角标 = 没有信息量；该显示时没显示 = 用户以为限速没生效。
  */
 
-const TOKEN = "wbt_limits_token";
 
 function stubLocalStorage() {
   const store = new Map<string, string>();
@@ -26,19 +25,6 @@ function stubLocalStorage() {
     setItem: (key: string, value: string) => void store.set(key, String(value)),
     removeItem: (key: string) => void store.delete(key),
     clear: () => store.clear(),
-  });
-}
-
-type Call = { url: string; method: string; body: unknown };
-
-function stubFetch(calls: Call[], reply: unknown = { ok: true }) {
-  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
-    const parsed = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ url: String(url), method: String(init?.method ?? "GET"), body: parsed });
-    return new Response(JSON.stringify(reply), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
   });
 }
 
@@ -55,24 +41,25 @@ describe("账号限速", () => {
     stubLocalStorage();
     // 真实的存储键是 `wb.rp.*`（见 reverse-proxy.ts 的 BASE_KEY / TOKEN_KEY）。
     // 写错键的后果是请求静默不带令牌 —— 401 而不是报错，很容易被当成后端问题。
-    // 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setHostProvider）：
+    // 地址与令牌都由桌面端注入（见 reverse-proxy.ts 的 setAdminChannel）：
     // localStorage 里的旧键已退役，写它们不会生效，只会让断言静默通过。
-    setHostProvider({ base: () => "http://127.0.0.1:8787", token: () => TOKEN });
+    setAdminChannel(async (method, path, body) => {
+  channelCalls.push({ method, path, body });
+  return { status: channelStatus, body: channelReply };
+});
   });
   afterEach(() => vi.unstubAllGlobals());
 
   it("打到 accounts/{id}/limits，用 PUT", async () => {
-    const calls: Call[] = [];
-    stubFetch(calls);
+    const calls = stubFetch();
     await rp.setAccountLimits("acc-9", { weight: 2, max_concurrency: 3, min_interval: 1.5 });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toContain("accounts/acc-9/limits");
+    expect(calls[0].path).toContain("accounts/acc-9/limits");
     expect(calls[0].method).toBe("PUT");
   });
 
   it("三项都发，包括值为 0 的项", async () => {
-    const calls: Call[] = [];
-    stubFetch(calls);
+    const calls = stubFetch();
     // 权重 0 = 不参与轮转；并发 0 = 不限制；间隔 0 = 不限速。
     // 三者都必须原样出现在 body 里，不能被任何 `|| default` 吃掉。
     await rp.setAccountLimits("acc-1", { weight: 0, max_concurrency: 0, min_interval: 0 });
@@ -80,20 +67,15 @@ describe("账号限速", () => {
   });
 
   it("小数权重原样保留", async () => {
-    const calls: Call[] = [];
-    stubFetch(calls);
+    const calls = stubFetch();
     await rp.setAccountLimits("acc-1", { weight: 0.5, max_concurrency: 0, min_interval: 0 });
     expect((calls[0].body as { weight: number }).weight).toBe(0.5);
   });
 
-  it("带鉴权头", async () => {
-    let seen = "";
-    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
-      seen = String(new Headers(init?.headers).get("X-Proxy-Host-Token") ?? "");
-      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
-    });
+  it("进程内通道发出且只发一次", async () => {
+    const calls = stubFetch();
     await rp.setAccountLimits("acc-1", { weight: 1, max_concurrency: 0, min_interval: 0 });
-    expect(seen).toBe(TOKEN);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -151,3 +133,16 @@ describe("限速角标", () => {
     expect(limitsBadge(account({ weight: 1, max_concurrency: 2 }))).toBe("≤2");
   });
 });
+type ChannelCall = { method: string; path: string; body: unknown };
+
+let channelCalls: ChannelCall[] = [];
+let channelReply: unknown = { ok: true };
+let channelStatus = 200;
+
+function stubFetch(payload: unknown = { ok: true }) {
+  channelCalls = [];
+  channelReply = payload;
+  channelStatus = 200;
+  return channelCalls;
+}
+

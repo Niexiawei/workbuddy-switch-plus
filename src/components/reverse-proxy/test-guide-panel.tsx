@@ -123,8 +123,8 @@ const ENDPOINTS: [string, string, string][] = [
   ["GET", "/v1/models", "内置模型列表"],
 ];
 
-export function GuidePanel() {
-  const base = apiBaseFromService();
+export function GuidePanel({ base: baseProp }: { base?: string } = {}) {
+  const base = apiBaseFromService(baseProp);
   const credentialDir = "%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth";
   return (
     <div className="flex flex-col gap-5">

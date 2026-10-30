@@ -1,8 +1,9 @@
-//! HTTP 路由。
+//! HTTP 路由（**纯数据面**）。
 //!
-//! 数据面：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`。
-//! 管理面：`/admin/api/*`，鉴权见 `crate::hostauth`（宿主令牌）与 `crate::admin`。
-//! 未实现的端点返回 501，避免「看起来能用」。
+//! 对外只暴露：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`——
+//! 这就是「智能体 API 协议接口」的全部。管理面不在 HTTP 上：
+//! `crate::admin::router()` 由桌面端进程内调用（Tauri 命令 → tower `oneshot`），
+//! 见 docs/reverse-proxy-internal-plane-plan.md 附录 C。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,7 +21,6 @@ use crate::anthropic;
 use crate::catalog;
 use crate::chat;
 use crate::config::ProxyConfig;
-use crate::hostauth::HostAuth;
 use crate::profile;
 use crate::projection;
 use crate::prompt;
@@ -32,26 +32,23 @@ pub struct AppState {
     pub cfg: ProxyConfig,
     pub store: Arc<StateStore>,
     pub pool: Arc<crate::pool::Pool>,
-    pub admin: Arc<crate::admin::AdminState>,
-    /// 宿主令牌（桌面端注入）。见 `crate::hostauth`。
     pub metrics: Arc<crate::metrics::Metrics>,
-    pub host_auth: HostAuth,
     pub started_at: Instant,
     /// 模型目录缓存（60s）。放这里而不是模块级静态：测试之间不会串。
     pub catalog: std::sync::Mutex<Option<(Instant, Vec<Value>)>>,
 }
 
 impl AppState {
-    pub fn new(cfg: ProxyConfig, store: StateStore, host_auth: HostAuth) -> Self {
+    pub fn new(cfg: ProxyConfig, store: StateStore) -> Self {
         let store = Arc::new(store);
-        let pool = Arc::new(crate::pool::Pool::new(store.clone(), cfg.accounts_path.clone()));
-        let admin = Arc::new(crate::admin::AdminState::from_env());
+        let pool = Arc::new(crate::pool::Pool::new(
+            store.clone(),
+            cfg.accounts_path.clone(),
+        ));
         Self {
             cfg,
             store,
             pool,
-            admin,
-            host_auth,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             started_at: Instant::now(),
             catalog: std::sync::Mutex::new(None),
@@ -61,7 +58,6 @@ impl AppState {
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .nest("/admin/api", crate::admin::router())
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/usage", get(gateway_usage))
@@ -70,49 +66,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/messages", post(messages_handler))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .with_state(state)
-        // CORS 必须有：桌面端页面的 origin 是 `http://tauri.localhost`，向
-        // `127.0.0.1:8787` 发的管理面请求是**跨源**的；没有这一层，浏览器会把
-        // 响应整个拦下，界面表现为「无法连接反代服务」而服务端日志一切正常
-        // （2026-10-30 在测试机上实际踩到）。与 Python 版 CORSMiddleware 同语义：
-        // 任意 origin + 允许自带头（宿主令牌）+ 放行预检。
-        .layer(
-            tower_http::cors::CorsLayer::new()
-                .allow_origin(tower_http::cors::Any)
-                .allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                    axum::http::Method::PUT,
-                    axum::http::Method::PATCH,
-                    axum::http::Method::DELETE,
-                    axum::http::Method::OPTIONS,
-                ])
-                .allow_headers([
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::header::AUTHORIZATION,
-                    axum::http::HeaderName::from_static("x-admin-token"),
-                    crate::hostauth::HOST_TOKEN_HEADER
-                        .parse::<axum::http::HeaderName>()
-                        .expect("头部名是常量，必然合法"),
-                ]),
-        )
-}
-
-impl AppState {
-    /// 替换管理面状态（测试与自建宿主用，避免依赖进程环境变量）。
-    pub fn with_admin(mut self, admin: Arc<crate::admin::AdminState>) -> Self {
-        self.admin = admin;
-        self
-    }
+    // 不挂 CORS：本 router 的消费者是 CLI / SDK（非浏览器），没有预检问题；
+    // 曾经的 CORS 层（2026-10-30 a861be5）是为跨源打管理面加的，管理面离开
+    // HTTP 后它失去了存在意义。
 }
 
 /// 健康检查。刻意不要求鉴权：外部客户端与宿主都靠它判断「服务起来没有」。
 ///
 /// `desiredPort` / `portShifted` 让排障一眼看出端口是否发生过偏移
-/// （自动 +1，见 `crate::ports`）；`hostAuth` 表示宿主令牌是否启用。
+/// （自动 +1，见 `crate::ports`）。
 async fn health(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    connect: Option<ConnectInfo<std::net::SocketAddr>>,
 ) -> Json<Value> {
+    let peer = crate::hostauth::peer_from_connect(connect);
     let accounts = accounts::list_at(&state.cfg.accounts_path);
     Json(json!({
         "status": "ok",
@@ -124,14 +91,14 @@ async fn health(
         "dataDir": state.cfg.data_dir.to_string_lossy(),
         "accountsPath": state.cfg.accounts_path.to_string_lossy(),
         "stateWritable": state.store.writable(),
-        "hostAuth": state.host_auth.enabled(),
-        "peerIsLoopback": peer.ip().is_loopback(),
-        // 能力边界：客户端不应把 501 当成临时故障重试。
+        // 未知来源（无 ConnectInfo）按非回环处理，与 hostauth 的保守口径一致。
+        "peerIsLoopback": peer.map(|ip| ip.is_loopback()).unwrap_or(false),
+        // 能力边界：客户端不应把 501 当成临时故障重试。管理面不在 HTTP 上（进程内通道）。
         "capabilities": {
             "models": true,
             "chat": true,
-            "admin": true,
-            "auth": true,
+            "admin": false,
+            "auth": false,
             "usage": true,
             "ipAllowlist": true,
         },
@@ -171,7 +138,6 @@ async fn chat_handler(
     response
 }
 
-
 async fn messages_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -179,13 +145,25 @@ async fn messages_handler(
     Json(payload): Json<Value>,
 ) -> Response {
     let peer = crate::hostauth::peer_from_connect(connect);
-    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str), peer) {
+    let key = match crate::keys::authenticate(
+        &state.store,
+        &headers,
+        payload.get("model").and_then(Value::as_str),
+        peer,
+    ) {
         Ok(key) => key,
         Err(response) => return response,
     };
     let incoming = incoming_headers(&headers);
-    let client_stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let model = payload.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+    let client_stream = payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let mut body = anthropic::request_to_chat(&payload);
     // 适配器已经拼好 system 消息，仍需过一遍身份过滤与 11128 改写。
     prompt::normalize_body(&mut body);
@@ -220,13 +198,25 @@ async fn responses_handler(
     Json(payload): Json<Value>,
 ) -> Response {
     let peer = crate::hostauth::peer_from_connect(connect);
-    let key = match crate::keys::authenticate(&state.store, &headers, payload.get("model").and_then(Value::as_str), peer) {
+    let key = match crate::keys::authenticate(
+        &state.store,
+        &headers,
+        payload.get("model").and_then(Value::as_str),
+        peer,
+    ) {
         Ok(key) => key,
         Err(response) => return response,
     };
     let incoming = incoming_headers(&headers);
-    let client_stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let model = payload.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+    let client_stream = payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let mut body = responses::request_to_chat(&payload);
     prompt::normalize_body(&mut body);
     if chat::desensitize_enabled() {
@@ -263,7 +253,10 @@ async fn count_tokens(Json(payload): Json<Value>) -> Json<Value> {
         .get("messages")
         .map(|messages| messages.to_string())
         .unwrap_or_default()
-        + &payload.get("system").map(|system| system.to_string()).unwrap_or_default();
+        + &payload
+            .get("system")
+            .map(|system| system.to_string())
+            .unwrap_or_default();
     Json(serde_json::json!({"input_tokens": (text.chars().count() / 4).max(1)}))
 }
 
@@ -271,10 +264,17 @@ fn incoming_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     let pairs: Vec<(String, String)> = headers
         .iter()
         .filter_map(|(name, value)| {
-            value.to_str().ok().map(|value| (name.as_str().to_string(), value.to_string()))
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
         })
         .collect();
-    profile::lower_headers(pairs.iter().map(|(key, value)| (key.as_str(), value.as_str())))
+    profile::lower_headers(
+        pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str())),
+    )
 }
 
 async fn models(
@@ -288,4 +288,3 @@ async fn models(
     }
     Json(json!({ "object": "list", "data": catalog::load(&state).await })).into_response()
 }
-

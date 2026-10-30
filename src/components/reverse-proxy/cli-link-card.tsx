@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Banner, CopyButton, Field, PanelHeader, ToneBadge } from "@/components/reverse-proxy/rp-shared";
 import { disableCodebuddyCliProxy, enableCodebuddyCliProxy, getCodebuddyCliStatus } from "@/lib/api";
 import { normalizeProxyBase } from "@/lib/cli-link";
-import { getBaseUrl, rp } from "@/lib/reverse-proxy";
+import { rp } from "@/lib/reverse-proxy";
+import { proxyServiceStatus } from "@/lib/proxy-service";
 import type { CodeBuddyCliStatus } from "@/lib/types";
 
 /**
@@ -21,7 +22,7 @@ export function CliLinkCard() {
   const [status, setStatus] = useState<CodeBuddyCliStatus | null>(null);
   const [key, setKey] = useState("");
   const [reveal, setReveal] = useState(false);
-  const [baseDraft, setBaseDraft] = useState(() => `${getBaseUrl()}/v1`);
+  const [baseDraft, setBaseDraft] = useState("");
   const [busy, setBusy] = useState<"" | "load" | "enable" | "disable" | "rotate">("load");
   const [error, setError] = useState("");
 
@@ -32,6 +33,10 @@ export function CliLinkCard() {
     if (!quiet) setBusy("load");
     try {
       const next = await getCodebuddyCliStatus();
+      try {
+        const svc = await proxyServiceStatus();
+        if (svc.baseUrl && !baseDraft) setBaseDraft(`${svc.baseUrl}/v1`);
+      } catch { /* 服务状态拉不到时保留手填 */ }
       setStatus(next);
       if (!quiet) setError("");
     } catch (cause) {

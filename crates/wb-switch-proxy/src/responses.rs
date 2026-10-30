@@ -23,7 +23,9 @@ fn text_of(content: &Value) -> String {
         Value::Array(blocks) => blocks
             .iter()
             .filter_map(|block| {
-                block.get("text").and_then(Value::as_str)
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
                     .or_else(|| block.get("content").and_then(Value::as_str))
             })
             .collect::<Vec<_>>()
@@ -46,7 +48,10 @@ pub fn request_to_chat(body: &Value) -> Value {
         Some(Value::String(text)) => messages.push(json!({"role": "user", "content": text})),
         Some(Value::Array(items)) => {
             for item in items {
-                let kind = item.get("type").and_then(Value::as_str).unwrap_or("message");
+                let kind = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("message");
                 match kind {
                     "function_call_output" => {
                         messages.push(json!({
@@ -126,8 +131,14 @@ fn event(name: &str, payload: Value) -> Vec<u8> {
     format!("event: {name}\ndata: {payload}\n\n").into_bytes()
 }
 
-fn response_object(id: &str, model: &str, status: &str, created_at: i64,
-                   output: Vec<Value>, usage: Option<Value>) -> Value {
+fn response_object(
+    id: &str,
+    model: &str,
+    status: &str,
+    created_at: i64,
+    output: Vec<Value>,
+    usage: Option<Value>,
+) -> Value {
     json!({
         "id": id,
         "object": "response",
@@ -194,18 +205,38 @@ impl ResponsesStream {
             return Vec::new();
         }
         self.started = true;
-        let created = response_object(&self.response_id, &self.model, "in_progress", self.created_at, vec![], None);
-        let mut out = event("response.created", json!({
-            "type": "response.created",
-            "sequence_number": self.next_seq(),
-            "response": created,
-        }));
-        let in_progress = response_object(&self.response_id, &self.model, "in_progress", self.created_at, vec![], None);
-        out.extend(event("response.in_progress", json!({
-            "type": "response.in_progress",
-            "sequence_number": self.next_seq(),
-            "response": in_progress,
-        })));
+        let created = response_object(
+            &self.response_id,
+            &self.model,
+            "in_progress",
+            self.created_at,
+            vec![],
+            None,
+        );
+        let mut out = event(
+            "response.created",
+            json!({
+                "type": "response.created",
+                "sequence_number": self.next_seq(),
+                "response": created,
+            }),
+        );
+        let in_progress = response_object(
+            &self.response_id,
+            &self.model,
+            "in_progress",
+            self.created_at,
+            vec![],
+            None,
+        );
+        out.extend(event(
+            "response.in_progress",
+            json!({
+                "type": "response.in_progress",
+                "sequence_number": self.next_seq(),
+                "response": in_progress,
+            }),
+        ));
         out
     }
 
@@ -214,20 +245,26 @@ impl ResponsesStream {
             return Vec::new();
         }
         self.text_open = true;
-        let mut out = event("response.output_item.added", json!({
-            "type": "response.output_item.added",
-            "sequence_number": self.next_seq(),
-            "output_index": 0,
-            "item": {"type": "message", "id": "msg_rust_0", "status": "in_progress", "role": "assistant", "content": []},
-        }));
-        out.extend(event("response.content_part.added", json!({
-            "type": "response.content_part.added",
-            "sequence_number": self.next_seq(),
-            "output_index": 0,
-            "item_id": "msg_rust_0",
-            "content_index": 0,
-            "part": {"type": "output_text", "text": "", "annotations": []},
-        })));
+        let mut out = event(
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "sequence_number": self.next_seq(),
+                "output_index": 0,
+                "item": {"type": "message", "id": "msg_rust_0", "status": "in_progress", "role": "assistant", "content": []},
+            }),
+        );
+        out.extend(event(
+            "response.content_part.added",
+            json!({
+                "type": "response.content_part.added",
+                "sequence_number": self.next_seq(),
+                "output_index": 0,
+                "item_id": "msg_rust_0",
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []},
+            }),
+        ));
         out
     }
 
@@ -237,49 +274,93 @@ impl ResponsesStream {
         while let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = self.buffer.drain(..=position).collect();
             let line = String::from_utf8_lossy(&line);
-            let Some(data) = line.trim().strip_prefix("data:") else { continue };
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
             let data = data.trim();
             if data.is_empty() || data == "[DONE]" {
                 continue;
             }
-            let Ok(value) = serde_json::from_str::<Value>(data) else { continue };
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
             if value.get("error").is_some() {
                 self.failed = true;
                 continue;
             }
             if let Some(usage) = value.get("usage") {
-                self.prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(self.prompt_tokens);
-                self.completion_tokens = usage.get("completion_tokens").and_then(Value::as_i64).unwrap_or(self.completion_tokens);
+                self.prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(self.prompt_tokens);
+                self.completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(self.completion_tokens);
             }
-            let Some(choice) = value.get("choices").and_then(Value::as_array).and_then(|rows| rows.first()) else { continue };
+            let Some(choice) = value
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.first())
+            else {
+                continue;
+            };
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 if !reason.is_empty() {
                     self.finish = Some(reason.to_string());
                 }
             }
-            let Some(delta) = choice.get("delta") else { continue };
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 if !text.is_empty() {
                     out.extend(self.ensure_text_item());
                     self.text.push_str(text);
-                    out.extend(event("response.output_text.delta", json!({
-                        "type": "response.output_text.delta",
-                        "sequence_number": self.next_seq(),
-                        "output_index": 0,
-                        "item_id": "msg_rust_0",
-                        "content_index": 0,
-                        "delta": text,
-                    })));
+                    out.extend(event(
+                        "response.output_text.delta",
+                        json!({
+                            "type": "response.output_text.delta",
+                            "sequence_number": self.next_seq(),
+                            "output_index": 0,
+                            "item_id": "msg_rust_0",
+                            "content_index": 0,
+                            "delta": text,
+                        }),
+                    ));
                 }
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
-                    let id = call.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                    let name = call.get("function").and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("").to_string();
-                    let args = call.get("function").and_then(|f| f.get("arguments")).and_then(Value::as_str).unwrap_or("").to_string();
-                    if !self.tools.iter().any(|tool| tool.id == id && !id.is_empty()) {
+                    let id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let name = call
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let args = call
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    if !self
+                        .tools
+                        .iter()
+                        .any(|tool| tool.id == id && !id.is_empty())
+                    {
                         let output_index = self.tools.len() as u32 + 1;
-                        self.tools.push(ToolItem { output_index, id: id.clone(), name: name.clone(), arguments: String::new() });
+                        self.tools.push(ToolItem {
+                            output_index,
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: String::new(),
+                        });
                         out.extend(event("response.output_item.added", json!({
                             "type": "response.output_item.added",
                             "sequence_number": self.next_seq(),
@@ -293,13 +374,16 @@ impl ResponsesStream {
                             let sequence = self.next_seq();
                             let output_index = self.tools[position].output_index;
                             self.tools[position].arguments.push_str(&args);
-                            out.extend(event("response.function_call_arguments.delta", json!({
-                                "type": "response.function_call_arguments.delta",
-                                "sequence_number": sequence,
-                                "output_index": output_index,
-                                "item_id": format!("fc_{id}"),
-                                "delta": args,
-                            })));
+                            out.extend(event(
+                                "response.function_call_arguments.delta",
+                                json!({
+                                    "type": "response.function_call_arguments.delta",
+                                    "sequence_number": sequence,
+                                    "output_index": output_index,
+                                    "item_id": format!("fc_{id}"),
+                                    "delta": args,
+                                }),
+                            ));
                         }
                     }
                 }
@@ -323,32 +407,41 @@ impl ResponsesStream {
         if self.text_open {
             let text = self.text.clone();
             let seq_text = self.next_seq();
-            out.extend(event("response.output_text.done", json!({
-                "type": "response.output_text.done",
-                "sequence_number": seq_text,
-                "output_index": 0,
-                "item_id": "msg_rust_0",
-                "content_index": 0,
-                "text": text,
-            })));
+            out.extend(event(
+                "response.output_text.done",
+                json!({
+                    "type": "response.output_text.done",
+                    "sequence_number": seq_text,
+                    "output_index": 0,
+                    "item_id": "msg_rust_0",
+                    "content_index": 0,
+                    "text": text,
+                }),
+            ));
             let seq_part = self.next_seq();
-            out.extend(event("response.content_part.done", json!({
-                "type": "response.content_part.done",
-                "sequence_number": seq_part,
-                "output_index": 0,
-                "item_id": "msg_rust_0",
-                "content_index": 0,
-                "part": {"type": "output_text", "text": text, "annotations": []},
-            })));
+            out.extend(event(
+                "response.content_part.done",
+                json!({
+                    "type": "response.content_part.done",
+                    "sequence_number": seq_part,
+                    "output_index": 0,
+                    "item_id": "msg_rust_0",
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": text, "annotations": []},
+                }),
+            ));
             let item = json!({"type": "message", "id": "msg_rust_0", "status": "completed",
                               "role": "assistant", "content": [{"type": "output_text", "text": text, "annotations": []}]});
             let seq_item = self.next_seq();
-            out.extend(event("response.output_item.done", json!({
-                "type": "response.output_item.done",
-                "sequence_number": seq_item,
-                "output_index": 0,
-                "item": item,
-            })));
+            out.extend(event(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "sequence_number": seq_item,
+                    "output_index": 0,
+                    "item": item,
+                }),
+            ));
             output.push(item);
         }
 
@@ -356,25 +449,36 @@ impl ResponsesStream {
         for position in 0..tool_count {
             let (output_index, id, name, arguments) = {
                 let tool = &self.tools[position];
-                (tool.output_index, tool.id.clone(), tool.name.clone(), tool.arguments.clone())
+                (
+                    tool.output_index,
+                    tool.id.clone(),
+                    tool.name.clone(),
+                    tool.arguments.clone(),
+                )
             };
             let seq_args = self.next_seq();
-            out.extend(event("response.function_call_arguments.done", json!({
-                "type": "response.function_call_arguments.done",
-                "sequence_number": seq_args,
-                "output_index": output_index,
-                "item_id": format!("fc_{id}"),
-                "arguments": arguments,
-            })));
+            out.extend(event(
+                "response.function_call_arguments.done",
+                json!({
+                    "type": "response.function_call_arguments.done",
+                    "sequence_number": seq_args,
+                    "output_index": output_index,
+                    "item_id": format!("fc_{id}"),
+                    "arguments": arguments,
+                }),
+            ));
             let item = json!({"type": "function_call", "id": format!("fc_{id}"), "status": "completed",
                               "call_id": id, "name": name, "arguments": arguments});
             let seq_item = self.next_seq();
-            out.extend(event("response.output_item.done", json!({
-                "type": "response.output_item.done",
-                "sequence_number": seq_item,
-                "output_index": output_index,
-                "item": item,
-            })));
+            out.extend(event(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "sequence_number": seq_item,
+                    "output_index": output_index,
+                    "item": item,
+                }),
+            ));
             output.push(item);
         }
 
@@ -395,8 +499,14 @@ impl ResponsesStream {
 
 /// 非流式：chat.completion → Responses response 对象。
 pub fn completion_to_response(completion: &Value, model: &str) -> Value {
-    let choice = completion.get("choices").and_then(Value::as_array).and_then(|rows| rows.first());
-    let message = choice.and_then(|row| row.get("message")).cloned().unwrap_or_else(|| json!({}));
+    let choice = completion
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first());
+    let message = choice
+        .and_then(|row| row.get("message"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let text = message.get("content").and_then(Value::as_str).unwrap_or("");
     let mut output = Vec::new();
     if !text.is_empty() {
@@ -415,13 +525,23 @@ pub fn completion_to_response(completion: &Value, model: &str) -> Value {
             }));
         }
     }
-    let usage = completion.get("usage").cloned().unwrap_or_else(|| json!({}));
+    let usage = completion
+        .get("usage")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let mapped = json!({
         "input_tokens": usage.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0),
         "output_tokens": usage.get("completion_tokens").and_then(Value::as_i64).unwrap_or(0),
         "total_tokens": usage.get("total_tokens").and_then(Value::as_i64).unwrap_or(0),
     });
-    response_object("resp_rust_proxy", model, "completed", 0, output, Some(mapped))
+    response_object(
+        "resp_rust_proxy",
+        model,
+        "completed",
+        0,
+        output,
+        Some(mapped),
+    )
 }
 
 /// chat SSE → Responses 事件流。
@@ -434,10 +554,15 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
         loop {
             match tokio::time::timeout(IDLE, stream.next()).await {
                 Err(_) => {
-                    let _ = tx.send(Bytes::from(event("response.failed", json!({
-                        "type": "response.failed",
-                        "error": {"type": "stream_timeout", "message": "上游长时间无响应"},
-                    })))).await;
+                    let _ = tx
+                        .send(Bytes::from(event(
+                            "response.failed",
+                            json!({
+                                "type": "response.failed",
+                                "error": {"type": "stream_timeout", "message": "上游长时间无响应"},
+                            }),
+                        )))
+                        .await;
                     return;
                 }
                 Ok(None) => break,
@@ -448,10 +573,15 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
                     }
                 }
                 Ok(Some(Err(error))) => {
-                    let _ = tx.send(Bytes::from(event("response.failed", json!({
-                        "type": "response.failed",
-                        "error": {"type": "transport", "message": error.to_string()},
-                    })))).await;
+                    let _ = tx
+                        .send(Bytes::from(event(
+                            "response.failed",
+                            json!({
+                                "type": "response.failed",
+                                "error": {"type": "transport", "message": error.to_string()},
+                            }),
+                        )))
+                        .await;
                     return;
                 }
             }
@@ -460,7 +590,9 @@ pub fn stream_response(response: reqwest::Response, model: String) -> Response {
     });
 
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (Ok::<_, std::io::Error>(item), rx))
+        rx.recv()
+            .await
+            .map(|item| (Ok::<_, std::io::Error>(item), rx))
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -480,7 +612,8 @@ mod tests {
             .join("../../tests/fixtures/proxy/dataplane/responses_stream.json");
         let case: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let chat = request_to_chat(&case["request"]["body"]);
-        let expected: Value = serde_json::from_str(case["upstream"]["body"].as_str().unwrap()).unwrap();
+        let expected: Value =
+            serde_json::from_str(case["upstream"]["body"].as_str().unwrap()).unwrap();
         assert_eq!(chat, expected);
     }
 
@@ -497,17 +630,20 @@ data: [DONE]\n\n";
             .lines()
             .filter_map(|line| line.strip_prefix("event: "))
             .collect();
-        assert_eq!(names, vec![
-            "response.created",
-            "response.in_progress",
-            "response.output_item.added",
-            "response.content_part.added",
-            "response.output_text.delta",
-            "response.output_text.done",
-            "response.content_part.done",
-            "response.output_item.done",
-            "response.completed",
-        ]);
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
         assert!(text.contains("\"text\":\"pong\""));
         assert!(text.contains("\"status\":\"completed\""));
     }

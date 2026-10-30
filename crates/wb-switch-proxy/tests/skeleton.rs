@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use wb_switch_proxy::config::ProxyConfig;
-use wb_switch_proxy::hostauth::HostAuth;
 use wb_switch_proxy::http::{router, AppState};
 use wb_switch_proxy::state::StateStore;
 
@@ -27,11 +26,7 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-fn app_with(
-    keys: Value,
-    writable: bool,
-    auth: HostAuth,
-) -> (tempfile::TempDir, Router) {
+fn app_with(keys: Value, writable: bool) -> (tempfile::TempDir, Router) {
     let (dir, root) = temp_dir();
     let accounts_path = root.join("accounts.json");
     std::fs::write(&accounts_path, r#"[{"id":"a1","uid":"u1","variant":"cn"}]"#).unwrap();
@@ -50,7 +45,7 @@ fn app_with(
     } else {
         StateStore::open(path).unwrap()
     };
-    let app = router(std::sync::Arc::new(AppState::new(cfg, store, auth)));
+    let app = router(std::sync::Arc::new(AppState::new(cfg, store)));
     (dir, app)
 }
 
@@ -63,7 +58,9 @@ fn loopback_request(uri: &str) -> Request<Body> {
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -71,12 +68,16 @@ fn sha256_hex(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[tokio::test]
 async fn health_reports_capabilities_and_peer() {
-    let (_dir, app) = app_with(json!({}), false, HostAuth::disabled());
+    let (_dir, app) = app_with(json!({}), false);
     let response = app.oneshot(loopback_request("/health")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
@@ -84,31 +85,29 @@ async fn health_reports_capabilities_and_peer() {
     assert_eq!(body["engine"], json!("rust"));
     assert_eq!(body["accounts"], json!(1));
     assert_eq!(body["capabilities"]["chat"], json!(true));
-    assert_eq!(body["capabilities"]["admin"], json!(true));
+    assert_eq!(body["capabilities"]["admin"], json!(false));
     assert_eq!(body["capabilities"]["usage"], json!(true));
     // IP 白名单已在 keys::ip_allowed 里执行（I4），能力声明同步为 true。
     assert_eq!(body["capabilities"]["ipAllowlist"], json!(true));
-    assert_eq!(body["stateWritable"], json!(false), "只读实例应如实报告不可写");
-    assert_eq!(body["hostAuth"], json!(false));
+    assert_eq!(
+        body["stateWritable"],
+        json!(false),
+        "只读实例应如实报告不可写"
+    );
     assert_eq!(body["peerIsLoopback"], json!(true));
 }
 
 #[tokio::test]
-async fn health_reports_host_auth_enabled() {
-    let (_dir, app) = app_with(json!({}), false, HostAuth::with_token("wbh_abcdef0123456789"));
-    let response = app.oneshot(loopback_request("/health")).await.unwrap();
-    let body = body_json(response).await;
-    assert_eq!(body["hostAuth"], json!(true));
-}
-
-#[tokio::test]
 async fn models_requires_no_key_on_fresh_install() {
-    let (_dir, app) = app_with(json!({}), false, HostAuth::disabled());
+    let (_dir, app) = app_with(json!({}), false);
     let response = app.oneshot(loopback_request("/v1/models")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK, "没有密钥时不应拦截");
     let body = body_json(response).await;
     assert_eq!(body["object"], json!("list"));
-    assert!(!body["data"].as_array().unwrap().is_empty(), "种子清单不应为空");
+    assert!(
+        !body["data"].as_array().unwrap().is_empty(),
+        "种子清单不应为空"
+    );
 }
 
 #[tokio::test]
@@ -116,7 +115,7 @@ async fn gateway_usage_rejects_missing_key_when_keys_exist() {
     let keys = json!({
         "k1": {"hash": sha256_hex("secret"), "name": "k", "enabled": true, "quota": 100}
     });
-    let (_dir, app) = app_with(keys, false, HostAuth::disabled());
+    let (_dir, app) = app_with(keys, false);
     let response = app.oneshot(loopback_request("/v1/usage")).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = body_json(response).await;
@@ -135,7 +134,7 @@ async fn gateway_usage_returns_quota_for_valid_key() {
             "models": ["glm-5.3"]
         }
     });
-    let (_dir, app) = app_with(keys, false, HostAuth::disabled());
+    let (_dir, app) = app_with(keys, false);
     let request = Request::builder()
         .uri("/v1/usage")
         .header("authorization", "Bearer secret")
@@ -149,45 +148,4 @@ async fn gateway_usage_returns_quota_for_valid_key() {
     assert_eq!(body["tokens"]["used"], json!(40));
     assert_eq!(body["tokens"]["remaining"], json!(60));
     assert_eq!(body["key"]["name"], json!("测试"));
-}
-
-#[tokio::test]
-async fn admin_api_accepts_host_token_from_loopback() {
-    let token = "wbh_abcdef0123456789";
-    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token(token));
-    let mut request = Request::builder()
-        .uri("/admin/api/session")
-        .header("x-proxy-host-token", token)
-        .body(Body::empty())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "宿主令牌应直接通过鉴权");
-    let body = body_json(response).await;
-    assert_eq!(body["role"], json!("admin"));
-}
-
-#[tokio::test]
-async fn admin_api_rejects_host_token_from_non_loopback() {
-    let token = "wbh_abcdef0123456789";
-    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token(token));
-    let mut request = Request::builder()
-        .uri("/admin/api/session")
-        .header("x-proxy-host-token", token)
-        .body(Body::empty())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 9], 50000))));
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "非回环来源不应拿到 admin");
-}
-
-#[tokio::test]
-async fn admin_api_rejects_without_any_credential() {
-    let (_dir, app) = app_with(json!({}), true, HostAuth::with_token("wbh_abcdef0123456789"));
-    let response = app.oneshot(loopback_request("/admin/api/session")).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

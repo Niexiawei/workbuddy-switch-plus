@@ -3,8 +3,9 @@
 //! 这是主项目进程内的 axum 监听：由 Tauri 桌面端在启动时拉起（`ProxyService`），
 //! 随主进程退出而关闭，不存在独立的 exe 或第二个宿主。
 //!
-//! 数据面：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`（网关密钥自查）。
-//! 管理面：`/admin/api/*`（与 Python 版同契约；未实现的路由返回 501 而不是伪装成功）。
+//! 数据面（唯一 HTTP 面）：`/health`、`/v1/models`、4 条对话接口、`/v1/usage`。
+//! 管理面：不在 HTTP 上，`crate::admin::router()` 由桌面端进程内调用
+//! （`ProxyService::admin_request` → tower `oneshot`）。
 //!
 //! 端口：`ProxyConfig.port` 是**期望**端口，实际端口由 [`ports`] 在冲突时 +1 决定，
 //! 两者都通过 [`ProxyHandle::status`] 回给宿主。
@@ -72,6 +73,14 @@ impl From<std::io::Error> for StartError {
     }
 }
 
+/// 组装应用状态（数据面 handler 与管理面进程内通道共用同一份）。
+///
+/// 唯一的 `AppState` 构造点：字段增减只改这里，保证两条入口面前
+/// 是同一份状态、同一份契约。
+pub fn build_state(cfg: ProxyConfig, store: StateStore) -> Arc<http::AppState> {
+    Arc::new(http::AppState::new(cfg, store))
+}
+
 /// 运行中的反代句柄。持有监听地址与优雅退出通道。
 pub struct ProxyHandle {
     addr: SocketAddr,
@@ -79,6 +88,9 @@ pub struct ProxyHandle {
     desired_port: u16,
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<()>>,
+    /// 应用状态。宿主（ProxyService）另持一份给管理面进程内通道用；
+    /// `stop()` 消费 self 后这份 Arc 仍可存活（无监听、无后台任务，残留无害）。
+    state: Arc<http::AppState>,
 }
 
 impl ProxyHandle {
@@ -86,56 +98,71 @@ impl ProxyHandle {
     ///
     /// `port = 0` 是特例：交给系统随机分配（测试用），不做偏移。
     pub async fn start(cfg: ProxyConfig, store: StateStore) -> Result<Self, StartError> {
-        Self::start_with_auth(cfg, store, crate::hostauth::HostAuth::from_env()).await
+        let state = build_state(cfg.clone(), store);
+        Self::start_with_state(cfg, state).await
     }
 
-    /// 同上，但显式指定宿主令牌（桌面端在内存里生成，不读环境变量）。
-    pub async fn start_with_auth(
+    /// 同上，但复用外部已构建的 `AppState`（桌面端要另持一份给管理面通道）。
+    pub async fn start_with_state(
         cfg: ProxyConfig,
-        store: StateStore,
-        auth: crate::hostauth::HostAuth,
+        state: Arc<crate::http::AppState>,
     ) -> Result<Self, StartError> {
         let desired = cfg.port;
         if desired == 0 {
-            return Self::bind(cfg, store, auth, 0, 0).await;
+            return Self::bind(cfg, state, 0, 0).await;
         }
         let probe = ports::pick_port(desired, |port| bindable(&cfg.host, port))?;
         if probe.exhausted() && probe.actual == desired {
-            return Err(StartError::PortExhausted { desired, tried: probe.occupied });
+            return Err(StartError::PortExhausted {
+                desired,
+                tried: probe.occupied,
+            });
         }
-        Self::bind(cfg, store, auth, probe.actual, desired).await
+        Self::bind(cfg, state, probe.actual, desired).await
     }
 
     /// 直接在指定端口上绑定（不做偏移）。EADDRINUSE 原样返回给调用方，
     /// 由它决定要不要再走一轮偏移。
     async fn bind(
         cfg: ProxyConfig,
-        store: StateStore,
-        auth: crate::hostauth::HostAuth,
+        state: Arc<crate::http::AppState>,
         port: u16,
         desired_port: u16,
     ) -> Result<Self, StartError> {
         let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), port)).await?;
         let addr = listener.local_addr()?;
-        let app = http::router(Arc::new(http::AppState::new(cfg, store, auth)));
+        let app = http::router(state.clone());
         let (tx, rx) = oneshot::channel::<()>();
         let join = tokio::spawn(async move {
-            let _ = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                .with_graceful_shutdown(async {
-                    let _ = rx.await;
-                })
-                .await;
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await;
         });
         Ok(Self {
             addr,
-            desired_port: if desired_port == 0 { addr.port() } else { desired_port },
+            desired_port: if desired_port == 0 {
+                addr.port()
+            } else {
+                desired_port
+            },
             shutdown: Some(tx),
             join: Some(join),
+            state,
         })
     }
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// 应用状态快照（桌面端构建管理面通道时用）。
+    pub fn state(&self) -> &Arc<http::AppState> {
+        &self.state
     }
 
     pub fn base_url(&self) -> String {

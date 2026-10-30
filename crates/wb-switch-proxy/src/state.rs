@@ -12,11 +12,33 @@ use serde_json::{json, Map, Value};
 
 /// state.json 必须存在的键。与 Python 版逐字一致（见 docs/reverse-proxy-contract.md）。
 pub const STATE_KEYS: &[&str] = &[
-    "keys", "users", "api_tokens", "audit_logs", "security", "ip_rules", "ip_access_logs",
-    "ip_last_allowed", "api_key_ips", "account_status", "account_overrides", "session_bindings",
-    "active", "accounts", "pool", "groups", "egress", "alerts", "usage_stats", "checkin_logs",
-    "travel_states", "runtime_since", "runtime_total_sec", "runtime_sessions", "model_aliases",
-    "secret", "settings",
+    "keys",
+    "users",
+    "api_tokens",
+    "audit_logs",
+    "security",
+    "ip_rules",
+    "ip_access_logs",
+    "ip_last_allowed",
+    "api_key_ips",
+    "account_status",
+    "account_overrides",
+    "session_bindings",
+    "active",
+    "accounts",
+    "pool",
+    "groups",
+    "egress",
+    "alerts",
+    "usage_stats",
+    "checkin_logs",
+    "travel_states",
+    "runtime_since",
+    "runtime_total_sec",
+    "runtime_sessions",
+    "model_aliases",
+    "secret",
+    "settings",
 ];
 
 /// 计数类键的默认值是数字，日志类键是**数组**（Python 侧为 deque/list，前端
@@ -63,10 +85,16 @@ impl StateStore {
         }
         let object: &mut Map<String, Value> = data.as_object_mut().expect("object");
         for key in STATE_KEYS {
-            object.entry((*key).to_string()).or_insert_with(|| default_for(key));
+            object
+                .entry((*key).to_string())
+                .or_insert_with(|| default_for(key));
         }
         Self::normalize(object);
-        Ok(Self { path, data: std::sync::RwLock::new(data), writable })
+        Ok(Self {
+            path,
+            data: std::sync::RwLock::new(data),
+            writable,
+        })
     }
 
     /// 把类型不对的键纠正为契约形态（幂等，只在加载与写前重读时跑）。
@@ -130,11 +158,19 @@ impl StateStore {
     /// 只补齐缺失键、不丢已有键：磁盘上被别的进程删掉的键会跟着消失，这是本意——
     /// 删除也是对方的写入意图。
     fn reload_from_disk(&self, guard: &mut Value) {
-        let Ok(text) = std::fs::read_to_string(&self.path) else { return };
-        let Ok(mut disk) = serde_json::from_str::<Value>(&text) else { return };
-        let Some(object) = disk.as_object_mut() else { return };
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        let Ok(mut disk) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        let Some(object) = disk.as_object_mut() else {
+            return;
+        };
         for key in STATE_KEYS {
-            object.entry((*key).to_string()).or_insert_with(|| default_for(key));
+            object
+                .entry((*key).to_string())
+                .or_insert_with(|| default_for(key));
         }
         Self::normalize(object);
         *guard = disk;
@@ -152,10 +188,7 @@ mod tests {
         // 不写文件：全走默认值。日志类键必须是数组，否则前端 .map 崩。
         let store = StateStore::open(&path).unwrap();
         for key in ARRAY_KEYS {
-            assert!(
-                store.get(key).unwrap().is_array(),
-                "默认值应为数组：{key}"
-            );
+            assert!(store.get(key).unwrap().is_array(), "默认值应为数组：{key}");
         }
         // 对照：普通键仍是对象。
         assert!(store.get("keys").unwrap().is_object());
@@ -168,7 +201,8 @@ mod tests {
         // 模拟早前版本落盘的坏数据：日志键被写成 {}。
         std::fs::write(
             &path,
-            json!({"checkin_logs": {}, "audit_logs": {}, "ip_access_logs": {}, "request_logs": {}}).to_string(),
+            json!({"checkin_logs": {}, "audit_logs": {}, "ip_access_logs": {}, "request_logs": {}})
+                .to_string(),
         )
         .unwrap();
         let store = StateStore::open_writable(&path).unwrap();

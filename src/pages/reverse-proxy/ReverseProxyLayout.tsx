@@ -17,10 +17,8 @@ import { RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Banner, CopyButton, PanelHeader, ToneBadge } from "@/components/reverse-proxy/rp-shared";
-import { AddAccountDialog } from "@/components/reverse-proxy/add-account-dialog";
-import { BatchScanDialog } from "@/components/reverse-proxy/batch-scan-dialog";
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
-import { setHostProvider, rp, type RpOverview, type RpToken, type RpUser } from "@/lib/reverse-proxy";
+import { defaultAdminChannel, rp, setAdminChannel, type RpOverview } from "@/lib/reverse-proxy";
 import {
   portLine,
   proxyServiceStart,
@@ -28,17 +26,13 @@ import {
   type ProxyServiceStatus,
 } from "@/lib/proxy-service";
 
-/** 子页共享的数据与回调：概览、令牌、用户，以及「重新拉一次」。 */
+/** 子页共享的数据与回调：概览、服务状态，以及「重新拉一次」。 */
 export type ReverseProxyContextValue = {
   overview: RpOverview | null;
-  tokens: RpToken[];
-  users: RpUser[];
   service: ProxyServiceStatus | null;
   reloadOverview: () => Promise<void>;
-  reloadAccess: () => Promise<void>;
   /** 打开发起 OAuth 扫码的对话框（由布局统一持有，账号池子页只负责触发）。 */
   openAddAccount: () => void;
-  openBatchScan: () => void;
 };
 
 const ReverseProxyContext = createContext<ReverseProxyContextValue | null>(null);
@@ -72,42 +66,24 @@ export default function ReverseProxyLayout() {
   const navigate = useNavigate();
   const [service, setService] = useState<ProxyServiceStatus | null>(null);
   const [overview, setOverview] = useState<RpOverview | null>(null);
-  const [tokens, setTokens] = useState<RpToken[]>([]);
-  const [users, setUsers] = useState<RpUser[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  /**
-   * 地址与令牌都来自宿主：先拿状态，再把 provider 指过去。
-   *
-   * 顺序不能反——`rp.*` 的任何调用都会读 base 与 token，provider 没就位时
-   * 请求会打到 `DEFAULT_BASE`（一个没人监听的端口），表现为「明明服务在跑却连不上」。
-   */
+  // 通道只装配一次：管理面走进程内 invoke，与服务的运行状态无关——
+  // 停机时调用会拿到 Err（「内置服务未运行」），由下面的 phase 分支渲染提示。
+  useEffect(() => {
+    setAdminChannel(defaultAdminChannel());
+    return () => setAdminChannel(null);
+  }, []);
+
   const refreshService = useCallback(async () => {
     const status = await proxyServiceStatus();
     setService(status);
-    if (status.running && status.baseUrl) {
-      setHostProvider({
-        base: () => status.baseUrl as string,
-        token: () => status.hostToken,
-      });
-    } else {
-      setHostProvider(null);
-    }
     return status;
   }, []);
 
   const reloadOverview = useCallback(async () => {
     setOverview(await rp.overview());
-  }, []);
-
-  const reloadAccess = useCallback(async () => {
-    const [t, u] = await Promise.all([
-      rp.listTokens().catch(() => []),
-      rp.listUsers().catch(() => []),
-    ]);
-    setTokens(t);
-    setUsers(u);
   }, []);
 
   const load = useCallback(async () => {
@@ -116,12 +92,11 @@ export default function ReverseProxyLayout() {
       const status = await refreshService();
       if (!status.running) return;
       await reloadOverview();
-      void reloadAccess();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
     }
-  }, [refreshService, reloadOverview, reloadAccess]);
+  }, [refreshService, reloadOverview]);
 
   useEffect(() => {
     void load();
@@ -155,18 +130,13 @@ export default function ReverseProxyLayout() {
   }, [load]);
 
   const [addOpen, setAddOpen] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
 
   const context = useMemo<ReverseProxyContextValue>(() => ({
     overview,
-    tokens,
-    users,
     service,
     reloadOverview,
-    reloadAccess,
     openAddAccount: () => setAddOpen(true),
-    openBatchScan: () => setBatchOpen(true),
-  }), [overview, tokens, users, service, reloadOverview, reloadAccess]);
+  }), [overview, service, reloadOverview]);
 
   const active = overview?.accounts.find((account) => account.active && account.enabled);
   const enabled = overview?.accounts.filter((account) => account.enabled).length ?? 0;
@@ -231,30 +201,14 @@ export default function ReverseProxyLayout() {
         </div>
       </div>
 
-      {/* 两个对话框由布局持有：账号池子页只触发，不各自维护一份 open 状态。 */}
-      {/* 桌面端唯一形态：OAuth 扫码走主项目；下面两个对话框留给历史分支，不再选择。 */}
-      {true ? (
-        <OAuthLoginDialog
-          open={addOpen}
-          onOpenChange={(open) => {
-            setAddOpen(open);
-            if (!open) void reloadOverview().catch(() => undefined);
-          }}
-        />
-      ) : (
-        <>
-          <AddAccountDialog
-            open={addOpen}
-            onOpenChange={setAddOpen}
-            onAdded={() => void reloadOverview().catch(() => undefined)}
-          />
-          <BatchScanDialog
-            open={batchOpen}
-            onOpenChange={setBatchOpen}
-            onAdded={() => void reloadOverview().catch(() => undefined)}
-          />
-        </>
-      )}
+      {/* OAuth 扫码由布局持有：账号池子页只触发，不各自维护一份 open 状态。 */}
+      <OAuthLoginDialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) void reloadOverview().catch(() => undefined);
+        }}
+      />
     </ReverseProxyContext.Provider>
   );
 }

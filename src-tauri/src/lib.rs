@@ -275,7 +275,7 @@ pub fn run() {
             commands::proxy_service_start,
             commands::proxy_service_stop,
             commands::proxy_service_set_port,
-            commands::proxy_admin_token,
+            commands::proxy_admin_request,
             commands::get_codebuddy_cli_status,
             commands::install_codebuddy_cli_helper,
             commands::enable_codebuddy_cli_proxy,

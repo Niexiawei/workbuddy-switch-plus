@@ -17,7 +17,10 @@ async fn mock_upstream(body: &'static str) -> String {
     let app = Router::new().route(
         "/v3/config",
         get(move || async move {
-            ([(axum::http::header::CONTENT_TYPE, "application/json")], body)
+            (
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -45,16 +48,23 @@ fn app_with(upstream: String) -> (tempfile::TempDir, Router) {
         billing_base: "http://127.0.0.1:1".to_string(),
     };
     let store = StateStore::open(root.join("state.json")).unwrap();
-    (dir, router(Arc::new(AppState::new(cfg, store, wb_switch_proxy::hostauth::HostAuth::disabled()))))
+    (dir, router(Arc::new(AppState::new(cfg, store))))
 }
 
 async fn models_json(app: Router) -> Value {
     let response = app
-        .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -70,10 +80,16 @@ async fn remote_catalogue_is_used_and_filtered() {
     let (_dir, app) = app_with(upstream);
     let body = models_json(app).await;
     let data = body["data"].as_array().unwrap();
-    let ids: Vec<&str> = data.iter().filter_map(|model| model["id"].as_str()).collect();
+    let ids: Vec<&str> = data
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect();
     assert!(ids.contains(&"glm-5.3"));
     assert!(!ids.contains(&"draw"), "生成类模型应被过滤");
-    let glm = data.iter().find(|model| model["id"] == json!("glm-5.3")).unwrap();
+    let glm = data
+        .iter()
+        .find(|model| model["id"] == json!("glm-5.3"))
+        .unwrap();
     assert_eq!(glm["source"], json!("catalogue"));
     assert_eq!(glm["context_window"], json!(1_000_000));
     assert_eq!(glm["input_modalities"], json!(["text", "image"]));
@@ -89,5 +105,7 @@ async fn falls_back_to_seed_when_upstream_fails() {
     let body = models_json(app).await;
     let data = body["data"].as_array().unwrap();
     assert!(!data.is_empty());
-    assert!(data.iter().all(|model| model["context_window"].as_i64().unwrap_or(0) > 0));
+    assert!(data
+        .iter()
+        .all(|model| model["context_window"].as_i64().unwrap_or(0) > 0));
 }

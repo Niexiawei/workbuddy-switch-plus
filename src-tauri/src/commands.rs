@@ -113,15 +113,20 @@ pub async fn proxy_service_set_port(
     state.set_port(port).await
 }
 
-/// 取宿主令牌（放进 `X-Proxy-Host-Token` 头）。
+/// 进程内管理面调用：`{method, path, body}` → `{status, body}`。
 ///
-/// 令牌只存在进程内存里，不落盘、不写日志；前端每次请求前取用即可，
-/// 因此不会出现「口令写在 localStorage」那种情况。
+/// 管理面不在 HTTP 上（数据面是唯一 HTTP 面，见
+/// docs/reverse-proxy-internal-plane-plan.md 附录 C）；本命令是它唯一的入口。
+/// `Ok` 只代表通道通了，`status >= 400` 由前端判（RpError.status 语义不变）；
+/// `Err` 是通道级故障（服务未运行等），前端按「连接失败」处理。
 #[tauri::command]
-pub async fn proxy_admin_token(
+pub async fn proxy_admin_request(
     state: tauri::State<'_, crate::proxy_service::ProxyService>,
-) -> Result<String, String> {
-    Ok(state.host_token())
+    method: String,
+    path: String,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    state.admin_request(method, path, body).await
 }
 
 #[tauri::command]

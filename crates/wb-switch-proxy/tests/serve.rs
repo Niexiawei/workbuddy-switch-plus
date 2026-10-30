@@ -47,7 +47,9 @@ fn store_at(root: &PathBuf) -> StateStore {
 static PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-    PORT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 起一个反代并从 `desired` 起找端口。
@@ -81,7 +83,9 @@ async fn starts_on_desired_port_when_free() {
     // 影子释放后再启动，确保这个端口是空的。
     drop(shadow);
 
-    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root)).await.unwrap();
+    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root))
+        .await
+        .unwrap();
     let status = handle.status();
     assert_eq!(status["port"], json!(port));
     assert_eq!(status["desiredPort"], json!(port));
@@ -106,7 +110,10 @@ async fn shifts_to_next_port_when_desired_is_taken() {
     assert_eq!(status["portShifted"], json!(true), "端口被占时必须标记偏移");
     let actual = status["port"].as_u64().unwrap() as u16;
     assert_ne!(actual, taken, "实际端口不能还是被占的那个");
-    assert!(actual > taken, "偏移方向只能往上，实际 {actual} > 期望 {taken}");
+    assert!(
+        actual > taken,
+        "偏移方向只能往上，实际 {actual} > 期望 {taken}"
+    );
     handle.stop().await;
     drop(shadow);
 }
@@ -124,7 +131,9 @@ async fn skips_a_contiguous_run_of_occupied_ports() {
         }
     };
 
-    let handle = ProxyHandle::start(config_at(&root, base), store_at(&root)).await.unwrap();
+    let handle = ProxyHandle::start(config_at(&root, base), store_at(&root))
+        .await
+        .unwrap();
     let port = handle.status()["port"].as_u64().unwrap() as u16;
     assert_ne!(port, base);
     assert_ne!(port, base + 1);
@@ -151,9 +160,14 @@ async fn reports_port_exhaustion_when_a_whole_window_is_blocked() {
         return;
     }
 
-    let error = ProxyHandle::start(config_at(&root, base), store_at(&root)).await.err();
+    let error = ProxyHandle::start(config_at(&root, base), store_at(&root))
+        .await
+        .err();
     let message = format!("{:?}", error.expect("应当失败"));
-    assert!(message.contains("PortExhausted"), "应报告端口耗尽：{message}");
+    assert!(
+        message.contains("PortExhausted"),
+        "应报告端口耗尽：{message}"
+    );
     drop(shadows);
 }
 
@@ -164,8 +178,13 @@ async fn stop_releases_the_port() {
     let (shadow, port) = occupy();
     drop(shadow);
 
-    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root)).await.unwrap();
-    assert!(TcpListener::bind(("127.0.0.1", port)).is_err(), "运行期间端口应被占住");
+    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root))
+        .await
+        .unwrap();
+    assert!(
+        TcpListener::bind(("127.0.0.1", port)).is_err(),
+        "运行期间端口应被占住"
+    );
     handle.stop().await;
     // 优雅关闭之后端口必须能重新绑定，否则下一次启动会无谓地 +1。
     let rebound = TcpListener::bind(("127.0.0.1", port));
@@ -180,7 +199,9 @@ async fn serves_health_over_a_real_socket() {
     let (shadow, port) = occupy();
     drop(shadow);
 
-    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root)).await.unwrap();
+    let handle = ProxyHandle::start(config_at(&root, port), store_at(&root))
+        .await
+        .unwrap();
     let base = handle.base_url();
     let response = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(response.status(), 200);

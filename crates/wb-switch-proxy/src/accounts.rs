@@ -33,7 +33,12 @@ pub fn list_at(path: &Path) -> Vec<AccountView> {
 }
 
 fn text(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn from_value(value: &Value) -> Option<AccountView> {

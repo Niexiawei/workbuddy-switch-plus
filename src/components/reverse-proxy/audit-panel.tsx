@@ -4,7 +4,8 @@ import { Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { Banner, Empty, PanelHeader, ToneBadge, fmtTime } from "@/components/reverse-proxy/rp-shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { rp, type RpAuditLog } from "@/lib/reverse-proxy";
+import { type RpAuditLog } from "@/lib/reverse-proxy";
+import { legacyRequest as rp } from "@/pages/reverse-proxy/legacy/legacy-admin";
 import { ConfirmDialog, useConfirm } from "./confirm-dialog";
 
 /**
@@ -34,7 +35,7 @@ export function AuditPanel() {
     setLoading(true);
     setError("");
     try {
-      setRows(await rp.auditLogs(PAGE_LIMIT));
+      setRows(await rp(`audit-logs?limit=${PAGE_LIMIT}`));
     } catch (cause) {
       // 只读身份（viewer）进不来这个接口 —— 那不是错误而是策略，
       // 所以文案要说清是权限，别让用户去猜是不是服务挂了。
@@ -79,7 +80,7 @@ export function AuditPanel() {
                 description: "只清掉历史记录。清空这个动作本身会被记成一条新记录，所以清完之后这一页不会是空的。",
                 confirmLabel: "清空",
                 danger: true,
-                run: () => rp.clearAuditLogs(),
+                run: () => rp("audit-logs/clear", { method: "POST" }),
               })}
             >
               <Trash2 className="size-3.5" />清空

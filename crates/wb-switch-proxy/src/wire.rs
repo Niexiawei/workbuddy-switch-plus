@@ -13,10 +13,26 @@ pub const DEFAULT_MODEL: &str = "deepseek-v4.1-flash";
 
 /// 透传字段白名单。不在表里的字段一律丢弃，避免把客户端私有字段打到上游。
 pub const PASSTHROUGH_BODY_KEYS: &[&str] = &[
-    "model", "messages", "tools", "tool_choice", "temperature", "max_tokens",
-    "max_completion_tokens", "top_p", "stream", "stream_options", "stop",
-    "presence_penalty", "frequency_penalty", "n", "response_format", "seed", "user",
-    "reasoning_effort", "verbosity", "reasoning_summary",
+    "model",
+    "messages",
+    "tools",
+    "tool_choice",
+    "temperature",
+    "max_tokens",
+    "max_completion_tokens",
+    "top_p",
+    "stream",
+    "stream_options",
+    "stop",
+    "presence_penalty",
+    "frequency_penalty",
+    "n",
+    "response_format",
+    "seed",
+    "user",
+    "reasoning_effort",
+    "verbosity",
+    "reasoning_summary",
 ];
 
 pub fn normalize_chat(payload: &Value, profile: &str) -> Value {
