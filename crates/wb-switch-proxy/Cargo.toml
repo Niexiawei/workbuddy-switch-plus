@@ -17,6 +17,8 @@ sha2 = "0.10"
 pbkdf2 = "0.12"
 # 宿主令牌的随机源：只用于生成一个不可预测的管理面凭据。
 getrandom = "0.2"
+# CORS：桌面端页面（tauri.localhost）跨源调管理面必需
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

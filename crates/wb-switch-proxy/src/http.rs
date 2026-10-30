@@ -68,6 +68,31 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/messages", post(messages_handler))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .with_state(state)
+        // CORS 必须有：桌面端页面的 origin 是 `http://tauri.localhost`，向
+        // `127.0.0.1:8787` 发的管理面请求是**跨源**的；没有这一层，浏览器会把
+        // 响应整个拦下，界面表现为「无法连接反代服务」而服务端日志一切正常
+        // （2026-10-30 在测试机上实际踩到）。与 Python 版 CORSMiddleware 同语义：
+        // 任意 origin + 允许自带头（宿主令牌）+ 放行预检。
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::PATCH,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::HeaderName::from_static("x-admin-token"),
+                    crate::hostauth::HOST_TOKEN_HEADER
+                        .parse::<axum::http::HeaderName>()
+                        .expect("头部名是常量，必然合法"),
+                ]),
+        )
 }
 
 impl AppState {
