@@ -89,8 +89,9 @@ export default function ReverseProxyLayout() {
   const load = useCallback(async () => {
     setError("");
     try {
-      const status = await refreshService();
-      if (!status.running) return;
+      await refreshService();
+      // **不按 running 门控**：管理面走进程内通道，与数据面是否在监听无关——
+      // 停机 / Failed 态下概览照样能拉（Rust 侧通道恒可用），控制台完整可用。
       await reloadOverview();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -103,14 +104,14 @@ export default function ReverseProxyLayout() {
   }, [load]);
 
   // 概览 30 秒自刷新（页面可见时）。与列表页的「切 tab 才拉」不同，这里要跟上运行态。
+  // 停机时也照刷：控制台在停机态仍应展示配置与池信息（通道不依赖监听）。
   useEffect(() => {
-    if (!service?.running) return;
     const id = window.setInterval(() => {
       if (document.hidden) return;
       void reloadOverview().catch(() => undefined);
     }, 30000);
     return () => window.clearInterval(id);
-  }, [service?.running, reloadOverview]);
+  }, [reloadOverview]);
 
   const start = useCallback(async () => {
     setBusy(true);

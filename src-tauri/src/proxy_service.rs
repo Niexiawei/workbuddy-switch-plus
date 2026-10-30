@@ -55,7 +55,10 @@ struct Inner {
     /// 供 status() 在未运行时也如实回报；运行时以 handle 实际 bind 为准。
     host: String,
     /// 管理面子 router（P0 瘦身后的形态，已 state 化，可直接 oneshot）。
-    /// 与 handle 同锁同生命周期：start 装配、stop 清空。
+    ///
+    /// **生命周期与数据面监听解耦**：`new()` 时装配一次，进程存活期间恒可用，
+    /// stop/失败不清空。「停止服务」只停 `/v1/*` 对外监听——控制台（改端口、
+    /// 看配置、查失败原因）恰恰在停机时最需要，不能跟着一起消失。
     admin_router: Option<Arc<AxumRouter>>,
 }
 
@@ -71,13 +74,30 @@ impl Default for ProxyService {
 
 impl ProxyService {
     pub fn new() -> Self {
+        // 管理面通道在此装配一次：不依赖数据面是否在监听（见 Inner.admin_router 注释）。
+        // AppState 用默认配置构建——管理面的读写目标是 state.json / accounts.json，
+        // 端口与 host 只影响数据面 bind，对管理面无意义；start() 会用含用户设置的
+        // 配置另建一份 state 给数据面（两份 AppState 各司其职，读写同一批文件）。
+        let default_cfg = ProxyConfig::for_user();
+        let admin_state = match StateStore::open_writable(default_cfg.state_path()) {
+            Ok(store) => wb_switch_proxy::admin::router()
+                .with_state(wb_switch_proxy::build_state(default_cfg, store)),
+            Err(error) => {
+                // state.json 打不开（极端环境）：管理面退化为不可用，但服务仍能启动。
+                // 不 panic——通道不可用只在调用时以 Err 呈现，错误原因在这里打印。
+                eprintln!("[反代] 管理面通道装配失败：{error}");
+                wb_switch_proxy::admin::router().with_state(Arc::new(
+                    wb_switch_proxy::http::AppState::for_degraded(),
+                ))
+            }
+        };
         Self {
             inner: Mutex::new(Inner {
                 handle: None,
                 phase: Phase::Stopped,
                 desired_port: DEFAULT_PORT,
                 host: "127.0.0.1".to_string(),
-                admin_router: None,
+                admin_router: Some(Arc::new(admin_state)),
             }),
         }
     }
@@ -152,16 +172,15 @@ impl ProxyService {
             inner.host = host;
         }
 
-        // 应用状态只有一份：数据面监听与管理面通道共用。
+        // 应用状态只有一份：数据面监听使用含用户端口/监听设置的配置。
+        // （管理面通道在 new() 已独立装配，与这里的 state 读写同一批文件，
+        //   StateStore 的写前重读保证两个实例不会互相覆盖。）
         let state = wb_switch_proxy::build_state(cfg.clone(), store);
-        match ProxyHandle::start_with_state(cfg, state.clone()).await {
+        match ProxyHandle::start_with_state(cfg, state).await {
             Ok(handle) => {
                 let port = handle.addr().port();
-                // admin 子 router：不经 nest，URI 不带 /admin/api 前缀。
-                let admin = Arc::new(wb_switch_proxy::admin::router().with_state(state));
                 let mut inner = self.inner.lock().unwrap();
                 inner.handle = Some(handle);
-                inner.admin_router = Some(admin);
                 inner.phase = Phase::Running { port, desired };
                 drop(inner);
                 Ok(self.status())
@@ -237,15 +256,14 @@ impl ProxyService {
         body: Option<Value>,
     ) -> Result<Value, String> {
         // 短锁取 router，oneshot 在锁外 await——否则一个慢查询会卡死 status/stop。
+        // **不检查 phase**：管理面通道与数据面监听解耦（见 Inner.admin_router 注释），
+        // 停机 / 启动失败 / Failed 态下控制台照样能查配置、改端口、看失败原因。
         let router = {
             let inner = self.inner.lock().unwrap();
-            match (&inner.admin_router, &inner.phase) {
-                (Some(router), Phase::Running { .. }) => Some(router.clone()),
-                _ => None,
-            }
+            inner.admin_router.clone()
         };
         let Some(router) = router else {
-            return Err("内置服务未运行".to_string());
+            return Err("管理面通道未就绪（进程内装配失败）".to_string());
         };
 
         let request = build_admin_request(method, path, body)?;
@@ -298,12 +316,11 @@ impl ProxyService {
         let handle = {
             let mut inner = self.inner.lock().unwrap();
             let handle = inner.handle.take();
-            if handle.is_some() {
-                inner.phase = Phase::Stopped;
-            }
-            // admin router 与 handle 同生命周期：停机即失效，
-            // 通道在 router 为 None 时如实报「服务未运行」。
-            inner.admin_router = None;
+            // 无条件置 Stopped：stop 是幂等停机语义——没 handle（Starting/Failed 态）
+            // 时调用也应落到「已停」，而不是保留一个假 Running。
+            inner.phase = Phase::Stopped;
+            // admin router **不清空**：管理面与数据面监听解耦，
+            // 停机后控制台照常可用（这正是「停止服务」只该停对外 API 的语义）。
             handle
         };
         if let Some(handle) = handle {
@@ -319,10 +336,9 @@ impl ProxyService {
         let handle = {
             let mut inner = self.inner.lock().unwrap();
             let handle = inner.handle.take();
-            if handle.is_some() {
-                inner.phase = Phase::Stopped;
-            }
-            inner.admin_router = None;
+            // 无条件置 Stopped（同 stop() 的幂等语义）。
+            inner.phase = Phase::Stopped;
+            // 同 stop()：admin router 不清（进程都要退出了，这一行只影响竞态窗口）。
             handle
         };
         let Some(handle) = handle else { return };
@@ -556,10 +572,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_request_fails_when_not_running() {
+    async fn admin_request_works_even_when_stopped() {
+        // 管理面与数据面解耦的核心验收：new() 出来（从未 start）就能用。
+        // 读取的是真实用户 state.json —— 只断言通道语义（200 / 结构），不断言内容。
         let service = ProxyService::new();
-        let error = service.admin_request("GET".into(), "overview".into(), None).await.unwrap_err();
-        assert!(error.contains("未运行"), "通道级故障才 Err：{error}");
+        let reply = service.admin_request("GET".into(), "overview".into(), None).await.unwrap();
+        assert_eq!(reply["status"], json!(200));
+        assert!(reply["body"].is_object());
+    }
+
+    #[tokio::test]
+    async fn stop_keeps_admin_router() {
+        // 「停止服务」只停对外监听：stop 之后控制台（改端口/查配置）仍可用。
+        let (service, _root) = running_service();
+        service.stop().await;
+        let reply = service.admin_request("GET".into(), "overview".into(), None).await.unwrap();
+        assert_eq!(reply["status"], json!(200), "停机后管理面通道应照常可用");
+        assert_eq!(service.status()["running"], json!(false), "数据面确实停了");
     }
 
     #[tokio::test]
@@ -579,14 +608,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply["status"], json!(400));
-    }
-
-    #[tokio::test]
-    async fn stop_clears_admin_router() {
-        let (service, _root) = running_service();
-        service.stop().await;
-        let error = service.admin_request("GET".into(), "overview".into(), None).await.unwrap_err();
-        assert!(error.contains("未运行"));
     }
 
     /// 带查询串的 path 是合法成分（request-logs?limit=… 等）。

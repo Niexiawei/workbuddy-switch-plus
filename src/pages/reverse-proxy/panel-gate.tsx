@@ -7,7 +7,6 @@
 
 import { Loader2 } from "lucide-react";
 
-import { useReverseProxy } from "./ReverseProxyLayout";
 
 /** 概览还没到手时的占位。与面板的圆角/边框保持一致，切换时不会跳一下。 */
 export function PanelSkeleton({ label = "正在读取服务状态…" }: { label?: string }) {
@@ -34,9 +33,3 @@ export function ServiceDown() {
   );
 }
 
-/** 常见组合：服务在跑 + 概览已到手才渲染面板，否则给对应的空态。 */
-export function usePanelGate() {
-  const { overview, service } = useReverseProxy();
-  const ready = Boolean(service?.running && overview);
-  return { overview, ready };
-}

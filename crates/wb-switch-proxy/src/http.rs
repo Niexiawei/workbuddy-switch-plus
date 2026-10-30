@@ -54,6 +54,22 @@ impl AppState {
             catalog: std::sync::Mutex::new(None),
         }
     }
+
+    /// 管理面通道的**降级态**：state.json 打不开（极端环境）时兜底，让通道仍可
+    /// 装配——调用会得到明确的 403/500 错误，而不是整个通道 Err。正常路径不用它。
+    pub fn for_degraded() -> Self {
+        let dir = std::env::temp_dir().join("wb-switch-degraded-admin");
+        let cfg = ProxyConfig::for_user()
+            .with_data_dir(&dir)
+            .with_accounts(dir.join("accounts.json"));
+        let store = StateStore::open(cfg.state_path()).unwrap_or_else(|_| {
+            // 连 temp 都打不开：最后兜底（写一个内存外的假文件）。正常机器到不了这里。
+            let fallback = dir.join("state.degraded.json");
+            std::fs::write(&fallback, "{}").ok();
+            StateStore::open(&fallback).expect("降级态 state 无法构建")
+        });
+        Self::new(cfg, store)
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
