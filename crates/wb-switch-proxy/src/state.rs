@@ -19,10 +19,16 @@ pub const STATE_KEYS: &[&str] = &[
     "secret", "settings",
 ];
 
-/// 计数类键的默认值是数字，其余都是对象。默认值给错会让下游 `as_object()` 拿到 None。
+/// 计数类键的默认值是数字，日志类键是**数组**（Python 侧为 deque/list，前端
+/// 对它们直接 `.map`），其余是对象。默认值给错会让下游 `as_object()` 拿到 None，
+/// 或者前端拿到 `{}` 对它 `.map` 直接崩（2026-10-30 概览/账号/IP 安全/密钥页
+/// 白屏的根因）。
 fn default_for(key: &str) -> Value {
     match key {
         "runtime_since" | "runtime_total_sec" | "runtime_sessions" => json!(0),
+        // 日志类：Python 侧是数组（pool.py / security.py / server.py 里均为 []）。
+        // request_logs 是运行时内存（pool.request_logs），不落 state.json，故不在表内。
+        "checkin_logs" | "audit_logs" | "ip_access_logs" => json!([]),
         _ => json!({}),
     }
 }
@@ -32,6 +38,10 @@ pub struct StateStore {
     data: std::sync::RwLock<Value>,
     writable: bool,
 }
+
+/// 日志类键在 state.json 里必须是**数组**。早前版本的默认值表把它们写成 `{}`，
+/// 已经落盘的文件需要就地纠正——只补缺不纠型的话，坏类型会一直留着。
+const ARRAY_KEYS: &[&str] = &["checkin_logs", "audit_logs", "ip_access_logs"];
 
 impl StateStore {
     pub fn open(path: impl Into<PathBuf>) -> io::Result<Self> {
@@ -55,7 +65,19 @@ impl StateStore {
         for key in STATE_KEYS {
             object.entry((*key).to_string()).or_insert_with(|| default_for(key));
         }
+        Self::normalize(object);
         Ok(Self { path, data: std::sync::RwLock::new(data), writable })
+    }
+
+    /// 把类型不对的键纠正为契约形态（幂等，只在加载与写前重读时跑）。
+    fn normalize(object: &mut Map<String, Value>) {
+        for key in ARRAY_KEYS {
+            if let Some(value) = object.get_mut(*key) {
+                if !value.is_array() {
+                    *value = json!([]);
+                }
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -114,6 +136,69 @@ impl StateStore {
         for key in STATE_KEYS {
             object.entry((*key).to_string()).or_insert_with(|| default_for(key));
         }
+        Self::normalize(object);
         *guard = disk;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_keys_default_to_empty_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        // 不写文件：全走默认值。日志类键必须是数组，否则前端 .map 崩。
+        let store = StateStore::open(&path).unwrap();
+        for key in ARRAY_KEYS {
+            assert!(
+                store.get(key).unwrap().is_array(),
+                "默认值应为数组：{key}"
+            );
+        }
+        // 对照：普通键仍是对象。
+        assert!(store.get("keys").unwrap().is_object());
+    }
+
+    #[test]
+    fn legacy_object_typed_log_keys_are_corrected_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        // 模拟早前版本落盘的坏数据：日志键被写成 {}。
+        std::fs::write(
+            &path,
+            json!({"checkin_logs": {}, "audit_logs": {}, "ip_access_logs": {}, "request_logs": {}}).to_string(),
+        )
+        .unwrap();
+        let store = StateStore::open_writable(&path).unwrap();
+        for key in ARRAY_KEYS {
+            assert!(
+                store.get(key).unwrap().is_array(),
+                "加载时应纠偏为数组：{key}"
+            );
+        }
+        // 纠偏要落盘：下次读取（包括 Python 侧）看到的也是正确类型。
+        store.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let disk: Value = serde_json::from_str(&text).unwrap();
+        for key in ARRAY_KEYS {
+            assert!(disk[key].is_array(), "落盘后应为数组：{key}");
+        }
+    }
+
+    #[test]
+    fn real_array_content_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(
+            &path,
+            json!({"audit_logs": [{"time": 1, "action": "x"}]}).to_string(),
+        )
+        .unwrap();
+        let store = StateStore::open(&path).unwrap();
+        let logs = store.get("audit_logs").unwrap();
+        assert_eq!(logs.as_array().unwrap().len(), 1, "已有内容不能被清掉");
+        assert_eq!(logs[0]["action"], "x");
     }
 }

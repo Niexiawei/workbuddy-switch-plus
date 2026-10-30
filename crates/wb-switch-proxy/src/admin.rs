@@ -322,7 +322,9 @@ async fn overview(
         "default_model": models.first().cloned().unwrap_or_default(),
         "checkin_logs": [],
         "request_logs": [],
-        "groups": state.store.get("groups").unwrap_or_else(|| json!({})),
+        // Python overview 的 groups 是数组（groups.list_groups 输出）；
+        // 曾错误返回 state.json 原始对象，keys-panel 对它 .map 崩。
+        "groups": groups_list(&state.store),
         "uptime": state.started_at.elapsed().as_secs(),
         "runtime": {"session": state.started_at.elapsed().as_secs(), "total": state.started_at.elapsed().as_secs()},
         "events": [],
@@ -815,6 +817,26 @@ async fn clear_checkin_logs(
     }
 }
 
+
+/// 把 state.json 的 groups 对象转成前端期望的数组（每项带 id）。
+/// overview 与 GET /groups 共用，保证两处形状一致。
+fn groups_list(store: &crate::state::StateStore) -> Vec<Value> {
+    let value = store.get("groups").unwrap_or_else(|| json!({}));
+    value
+        .as_object()
+        .map(|groups| {
+            groups
+                .iter()
+                .map(|(id, row)| {
+                    let mut row = row.clone();
+                    row["id"] = json!(id);
+                    row
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn list_groups(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
@@ -824,16 +846,7 @@ async fn list_groups(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    let value = state.store.get("groups").unwrap_or_else(|| json!({}));
-    let rows: Vec<Value> = value
-        .as_object()
-        .map(|groups| groups.iter().map(|(id, row)| {
-            let mut row = row.clone();
-            row["id"] = json!(id);
-            row
-        }).collect())
-        .unwrap_or_default();
-    Json(json!(rows)).into_response()
+    Json(json!(groups_list(&state.store))).into_response()
 }
 
 async fn create_group(
