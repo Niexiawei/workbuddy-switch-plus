@@ -34,6 +34,7 @@ pub struct AppState {
     pub pool: Arc<crate::pool::Pool>,
     pub admin: Arc<crate::admin::AdminState>,
     /// 宿主令牌（桌面端注入）。见 `crate::hostauth`。
+    pub metrics: Arc<crate::metrics::Metrics>,
     pub host_auth: HostAuth,
     pub started_at: Instant,
     /// 模型目录缓存（60s）。放这里而不是模块级静态：测试之间不会串。
@@ -51,6 +52,7 @@ impl AppState {
             pool,
             admin,
             host_auth,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             started_at: Instant::now(),
             catalog: std::sync::Mutex::new(None),
         }
@@ -153,7 +155,20 @@ async fn chat_handler(
         Ok(key) => key,
         Err(response) => return response,
     };
-    chat::handle_chat(state, incoming_headers(&headers), payload, key).await
+    // 指标打点：与 Python MetricsMiddleware 同口径，只记数据面四条路径。
+    let started = std::time::Instant::now();
+    state.metrics.begin();
+    let response = chat::handle_chat(state.clone(), incoming_headers(&headers), payload, key).await;
+    let ok = response.status().is_success();
+    state.metrics.finish(
+        "/v1/chat/completions",
+        "api",
+        response.status().as_u16(),
+        ok,
+        started.elapsed().as_millis() as u64,
+        if ok { "success" } else { "http_error" },
+    );
+    response
 }
 
 

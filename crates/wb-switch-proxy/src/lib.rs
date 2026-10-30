@@ -21,6 +21,7 @@ pub mod errors;
 pub mod hostauth;
 pub mod http;
 pub mod keys;
+pub mod metrics;
 pub mod pool;
 pub mod ports;
 pub mod profile;

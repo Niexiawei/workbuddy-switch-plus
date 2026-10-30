@@ -315,7 +315,8 @@ async fn overview(
     Json(json!({
         "accounts": rows,
         "pool": state.store.get("pool").unwrap_or_else(|| json!({})),
-        "metrics": {},
+        // 概览页消费 metrics.recent 等字段；曾返回空 {} 导致 m.recent.map 白屏。
+        "metrics": state.metrics.snapshot(),
         "keys": keys,
         "models": models,
         "default_model": models.first().cloned().unwrap_or_default(),
@@ -1791,6 +1792,8 @@ async fn chat_test(
         "stream": false,
     });
     let upstream_headers = HeaderMap::new();
+    // 连接测试也计入指标（source = test）：Python 侧 MetricsMiddleware 同样统计 test。
+    state.metrics.begin();
     let response = crate::chat::handle_chat(state.clone(), incoming_headers(&upstream_headers), payload, None).await;
     let seconds = (started.elapsed().as_millis() as f64) / 1000.0;
 
@@ -1818,6 +1821,15 @@ async fn chat_test(
         .to_string();
 
     if status.is_success() && !answer.is_empty() {
+        // 连接测试也计入指标（source = test）：Python 的 MetricsMiddleware 同样统计。
+        state.metrics.finish(
+            "/admin/api/test",
+            "test",
+            status.as_u16(),
+            true,
+            started.elapsed().as_millis() as u64,
+            "success",
+        );
         return Json(json!({
             "ok": true,
             "status": status.as_u16(),
@@ -1827,6 +1839,15 @@ async fn chat_test(
         }))
         .into_response();
     }
+
+    state.metrics.finish(
+        "/admin/api/test",
+        "test",
+        status.as_u16(),
+        false,
+        started.elapsed().as_millis() as u64,
+        "http_error",
+    );
 
     // 上游的失败信息比一句笼统的「失败」有用得多（额度、模型权限都在里面）。
     let upstream_message = data
