@@ -8,6 +8,7 @@ mod reverse_proxy;
 #[cfg(desktop)]
 mod tray;
 mod update_service;
+#[cfg(windows)]
 mod winproc;
 
 use std::time::Duration;

@@ -133,7 +133,12 @@ export default function LegacyReverseProxyPage() {
       </div>
 
       <div className="mt-8 border-t border-border/60 pt-6">
-        {legacy?.running || !supported ? (
+        {!supported ? (
+          <Banner tone="muted">
+            Python 版反代服务只随 Windows 版分发，当前平台不可用。内置反代（Rust
+            版）无需额外组件，请使用「智能体接口」页。
+          </Banner>
+        ) : legacy?.running ? (
           <ReverseProxyPage />
         ) : (
           <div className="space-y-4">

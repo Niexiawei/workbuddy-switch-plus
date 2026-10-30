@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { onServiceSupportedChange, serviceSupported } from "@/lib/reverse-proxy-service";
+
 /**
  * 左侧导航入口的显示偏好。
  *
@@ -25,6 +27,11 @@ function readFlag(key: string): boolean {
   } catch {
     return true;
   }
+}
+
+/** 供 reverse-proxy-service 引用的原始偏好读取（避免循环依赖 import 顺序问题）。 */
+export function isLegacyProxyNavEnabledRaw(): boolean {
+  return readFlag(LEGACY_PROXY_NAV_STORAGE_KEY);
 }
 
 function writeFlag(key: string, enabled: boolean): void {
@@ -64,7 +71,7 @@ export function useSessionsNavEnabled(): boolean {
 }
 
 export function isLegacyProxyNavEnabled(): boolean {
-  return readFlag(LEGACY_PROXY_NAV_STORAGE_KEY);
+  return isLegacyProxyNavEnabledRaw() && serviceSupported();
 }
 
 export function setLegacyProxyNavEnabled(enabled: boolean): void {
@@ -72,5 +79,10 @@ export function setLegacyProxyNavEnabled(enabled: boolean): void {
 }
 
 export function useLegacyProxyNavEnabled(): boolean {
-  return useNavFlag(LEGACY_PROXY_NAV_STORAGE_KEY);
+  const pref = useNavFlag(LEGACY_PROXY_NAV_STORAGE_KEY);
+  // 平台不支持（非 Windows，Python 版不随包分发）时入口整体隐藏，
+  // 与用户的显示偏好取与——菜单不该给一个点了必报错的按钮。
+  const [supported, setSupported] = useState(serviceSupported);
+  useEffect(() => onServiceSupportedChange(() => setSupported(serviceSupported())), []);
+  return pref && supported;
 }

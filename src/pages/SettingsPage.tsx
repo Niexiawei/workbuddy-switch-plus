@@ -2052,7 +2052,7 @@ function AppearanceCard() {
         <SettingsFieldRow
           className="border-b-0"
           label="显示反代服务old 菜单"
-          description="上一代的 Python 独立服务，只作回滚通道。关闭后隐藏入口，页面仍可经地址直达"
+          description="上一代的 Python 独立服务（仅 Windows 版提供），只作回滚通道。关闭后隐藏入口，页面仍可经地址直达"
           htmlFor="appearance-legacy-proxy-nav"
         >
           <Switch

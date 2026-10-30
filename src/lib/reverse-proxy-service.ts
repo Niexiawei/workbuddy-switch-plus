@@ -15,12 +15,61 @@ function setLegacyBase(value: string): void {
   legacyBase = value.trim().replace(/\/+$/, "") || DEFAULT_LEGACY_BASE;
 }
 
+// ── 平台支持判定 ────────────────────────────────────────────────────────
+//
+// Python 版反代服务old 只随 Windows 安装包分发（CI 四平台矩阵里只有 win-x64
+// 跑 PyInstaller，见 .github/workflows/build.yml）。其它平台既没有随包的 exe，
+// 也没有对应的进程管控实现——界面必须整体隐藏 old 的入口，而不是显示一个
+// 点了必报「没找到可执行文件」的按钮。
+//
+// 判定用 UA 嗅探而不是异步 invoke：`serviceSupported()` 的调用点（App 布局、
+// 页面渲染）都是同步位置，改成 Promise 会把条件渲染全部撕成两帧。桌面端
+// WebView 的 UA 平台段与宿主 OS 一致，App.tsx 判断 macOS 标题栏已经用了
+// 同样的手法（navigator.userAgent.includes("Macintosh")）。
+
+function sniffWindows(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return ua.includes("Windows");
+}
+
+/** React 用的响应式判定：首次 invoke 回报后与嗅探结果取与并广播。 */
+let supportedOverride: boolean | null = null;
+const SUPPORTED_CHANGED_EVENT = "wb-switch:legacy-proxy-supported-changed";
+
+/** 异步核对平台支持（Rust 侧真相源），结果与嗅探值合并后通知订阅者。 */
+export async function syncServiceSupported(): Promise<boolean> {
+  try {
+    const status = await invoke<{ supported?: boolean }>("reverse_proxy_status");
+    if (typeof status.supported === "boolean") {
+      const next = status.supported && sniffWindows();
+      if (next !== supportedOverride) {
+        supportedOverride = next;
+        window.dispatchEvent(new Event(SUPPORTED_CHANGED_EVENT));
+      }
+    }
+  } catch {
+    /* 状态命令失败时保守沿用嗅探结果 */
+  }
+  return isServiceSupported();
+}
+
+function isServiceSupported(): boolean {
+  return supportedOverride ?? sniffWindows();
+}
+
+/** 订阅支持状态变化（React hook 内部用）。返回取消函数。 */
+export function onServiceSupportedChange(listener: () => void): () => void {
+  window.addEventListener(SUPPORTED_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(SUPPORTED_CHANGED_EVENT, listener);
+}
+
 /**
  * 反代服务的进程管控（仅桌面端可用）。
  *
  * 反代服务是独立可执行文件，桌面端负责把它拉起来/停掉——用户不该为了进管理页
  * 先去开一个终端敲 `python serve.py`。只服务「反代服务old」，内置服务见 `proxy-service.ts`；
- * `serviceSupported()` 返回 false，界面据此隐藏这些控件。
+ * `isServiceSupported()` 为 false（非 Windows）时，界面据此隐藏这些控件。
  */
 
 export type RpServiceStatus = {
@@ -39,14 +88,16 @@ export type RpServiceStatus = {
   dataDir: string | null;
   /** 找不到可执行文件时，服务端尝试过的位置。 */
   searched: string[];
+  /** 本平台是否提供 old（Windows 才为 true）。 */
+  supported: boolean;
   /** 首次启动时服务端生成的管理员口令，仅供本次显示。 */
   firstRunPassword: string | null;
   logTail: string[];
 };
 
+/** 兼容旧调用点的同步判定（含嗅探 + 已回报的 Rust 真相）。 */
 export function serviceSupported(): boolean {
-  // 只剩桌面端一个形态：Python old 启动器在桌面端总是可用。
-  return true;
+  return isServiceSupported();
 }
 
 export function serviceStatus(): Promise<RpServiceStatus> {

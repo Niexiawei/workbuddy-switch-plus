@@ -27,6 +27,16 @@ const BANNER_PREFIX: &str = "WB_BANNER ";
 /// 端口探测超时。本地回环连接很快，300ms 足够且不会卡住状态接口。
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// Python 反代服务old 是否在本平台可用。
+///
+/// Python 版只随 Windows 安装包分发（见 `.github/workflows/build.yml`：
+/// 四平台矩阵里只有 win-x64 跑 PyInstaller）。其它平台既没有随包的 exe，
+/// 进程管控里的「按端口反查监听者」也没有非 Windows 实现——返回 false，
+/// 让前端把 old 的入口整体藏起来，而不是给一个点了必报错的按钮。
+pub fn legacy_service_supported() -> bool {
+    cfg!(windows)
+}
+
 #[derive(Default)]
 pub struct ReverseProxy {
     inner: Mutex<Inner>,
@@ -86,6 +96,10 @@ pub struct Status {
     data_dir: Option<String>,
     /// 找不到可执行文件时列出尝试过的位置，方便用户手动指定。
     searched: Vec<String>,
+    /// 本平台是否提供 Python 反代服务old。Python 版只随 Windows 安装包分发
+    /// （tauri.windows.conf.json 的 bundle 资源），其它平台返回 false，
+    /// 前端据此隐藏菜单与启动入口。
+    supported: bool,
     first_run_password: Option<String>,
     log_tail: Vec<String>,
 }
@@ -319,6 +333,7 @@ fn status_of(inner: &mut Inner) -> Status {
         exe_exists: resolved_exists,
         data_dir: Some(data_dir.display().to_string()),
         searched,
+        supported: legacy_service_supported(),
         first_run_password,
         log_tail,
     }
@@ -366,6 +381,12 @@ pub fn reverse_proxy_start(
     port: Option<u16>,
     host: Option<String>,
 ) -> Result<Status, String> {
+    if !legacy_service_supported() {
+        return Err(
+            "Python 反代服务old 只随 Windows 版分发，当前平台不可用。内置反代（Rust 版）无需额外组件。"
+                .to_string(),
+        );
+    }
     start_service(&state, port, host)
 }
 

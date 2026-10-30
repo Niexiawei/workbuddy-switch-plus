@@ -41,6 +41,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import companionTrayIcon from "@/assets/agent-companion-tray.png";
 import { DEMO_UNAVAILABLE_MESSAGE, demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
 import { useLegacyProxyNavEnabled, useSessionsNavEnabled } from "@/lib/nav-prefs";
+import { syncServiceSupported } from "@/lib/reverse-proxy-service";
 import { changeCompanionEnabled, useCompanionEnabled } from "@/lib/use-companion-enabled";
 import { useCreditAutoRefresh } from "@/lib/use-credit-auto-refresh";
 import { useRotateDeferredNotice } from "@/lib/use-rotate-deferred-notice";
@@ -372,6 +373,12 @@ function ReverseProxyNav() {
 
 export default function App() {
   const Router = pagesDemoHostingEnabled ? HashRouter : BrowserRouter;
+
+  // 启动时向 Rust 核对「本平台是否提供反代服务old」（Windows 才为 true），
+  // 回报后经事件广播刷新导航与各页面的入口显隐（见 reverse-proxy-service.ts）。
+  useEffect(() => {
+    void syncServiceSupported();
+  }, []);
 
   return (
     <TooltipProvider delayDuration={250}>
