@@ -71,7 +71,19 @@ for (const target of targets) {
         .subarray(from, to)
         .toString("latin1")
         .replaceAll(/[^\x20-\x7e]+/g, " ");
-      hits.push({ needle, at, context });
+      // panic 定位串豁免：rustc 会把 `file!()`（panic 的 Location）编译成
+      // 绝对路径，Linux/Mac 的 CI 构建里所有 panic 消息都带
+      // `/home/runner/work/<repo>/<repo>/...`。它只用于错误报告显示，
+      // 不参与运行时的资源寻址，不属于本脚本要防的
+      // 「env!("CARGO_MANIFEST_DIR") 被拿去 PathBuf::from」威胁模型。
+      // 判据：panic Location 在二进制里的排布是 `…/file.rs` 后紧跟消息文本，
+      // 命中的 needle 若以 .rs 结尾、或其前文紧邻 .rs 文件名，即视为定位串。
+      const before = bytes.subarray(Math.max(0, at - 200), at).toString("latin1");
+      const isPanicLocation =
+        needle.endsWith(".rs") || /\.rs[^\x20-\x7e]/.test(before.slice(-80));
+      if (!isPanicLocation) {
+        hits.push({ needle, at, context });
+      }
       at = bytes.indexOf(raw, at + raw.length);
     }
   }
