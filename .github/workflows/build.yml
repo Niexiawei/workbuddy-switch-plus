@@ -1,34 +1,37 @@
-# 二改：本工作流已改为**仅手动触发**（Actions 页面 → Run workflow）。
+# 发布工作流：GitHub Release 发布时自动构建四平台产物并回传到该 Release。
 #
-# 原自动触发条件已停用，原因：本项目不使用 GitHub Actions 构建产物，
-# 由作者本地构建后手工上传到 Release。停用自动触发后：
-#   · push 代码 与 打版本标签 都不会再跑本工作流；
-#   · 手动运行时的输入参数、构建步骤与产物上传逻辑**全部保留不变**。
+# 触发：
+#   · 发布 Release（推 v* 标签并在 Releases 页点 Publish）→ 自动跑全平台；
+#   · workflow_dispatch：手动跑，可只选一个平台（用于验证构建，不产生 Release）。
 #
-# 如需恢复自动触发，把下面 `on:` 段替换回备份即可：
-#   _hyact_work/_backup_before_ci_narrowing/build.yml
-#   _hyact_work/_backup_before_ci_narrowing/test.yml
+# 平台矩阵（反代已并入 Rust 桌面端，数据面随主程序启动）：
+#   · win-x64    —— Windows 原生构建，NSIS 安装包；**唯一**额外打包 Python 版反代
+#                  （wb-reverse-proxy.exe，经 tauri.windows.conf.json 作为 bundle 资源
+#                  随包分发，作为 Rust 内置反代的退回选项，可从界面切回）；
+#   · mac-arm64  —— macOS 14 arm 原生构建（aarch64），app 包 + 自打 DMG；
+#   · mac-x64    —— macOS 14 arm runner 交叉编译 x86_64（Apple 双架构 SDK 自带支持）；
+#   · linux-x64  —— Ubuntu 原生构建，deb + AppImage。
+#
+# 历史说明：旧版本工作流只做 win-x64 且测试独立在 test.yml；现在测试由本地
+# （cargo test / npm test）把关，CI 只做发版构建，test.yml 已移除。
 
 name: build
 
 on:
-  # 二改：原为 `push: tags: ["v*"]`，已停用（不使用 CI 构建产物）。
-  # 恢复时取消注释并把 `workflow_dispatch:` 保留即可。
-  # push:
-  #   tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       platform:
-        description: "Which platform to build. win-x64 produces a test installer without a GitHub Release."
+        description: "手动运行时构建哪个平台（Release 发布触发时恒为全平台）"
         type: choice
         default: all
         options:
           - all
           - win-x64
-          # 以下平台已停用（只做 Windows x64）。恢复时把矩阵里对应段一并取消注释。
-          # - mac-arm64
-          # - mac-x64
-          # - linux-x64
+          - mac-arm64
+          - mac-x64
+          - linux-x64
 
 permissions:
   contents: write
@@ -47,56 +50,48 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
-          # 二改：只构建 Windows x64。macOS / Linux 段整段注释保留，恢复时取消注释即可。
+          # 四平台全量。win-x64 是唯一带 Python 反代退回包的平台（见文件头注释）。
           all_platforms = [
-          #               {
-          #                   "name": "mac-arm64",
-          #                   "os": "macos-14",
-          #                   "target": "aarch64-apple-darwin",
-          #                   "cli_bin": "wb-switch-darwin-arm64",
-          #                   "platform_tag": "darwin-arm64",
-          #                   "bundles": "app",
-          #                   "update_os": "macos",
-          #                   "update_arch": "aarch64",
-          #                   "update_bundle": "macos",
-          #                   "update_archive_name": "wb-switch-plus-macos-aarch64.app.tar.gz",
-          #               },
-          #               {
-          #                   "name": "mac-x64",
-          #                   "os": "macos-14",
-          #                   "target": "x86_64-apple-darwin",
-          #                   "cli_bin": "wb-switch-darwin-x64",
-          #                   "platform_tag": "darwin-x64",
-          #                   "bundles": "app",
-          #                   "update_os": "macos",
-          #                   "update_arch": "x86_64",
-          #                   "update_bundle": "macos",
-          #                   "update_archive_name": "wb-switch-plus-macos-x86_64.app.tar.gz",
-          #               },
               {
                   "name": "win-x64",
                   "os": "windows-latest",
                   "target": "x86_64-pc-windows-msvc",
-                  "cli_bin": "wb-switch-win32-x64.exe",
-                  "platform_tag": "win32-x64",
                   "bundles": "nsis",
                   "update_os": "windows",
                   "update_arch": "x86_64",
                   "update_bundle": "nsis",
                   "update_archive_name": "wb-switch-plus-windows-x86_64-setup.exe",
               },
-          #               {
-          #                   "name": "linux-x64",
-          #                   "os": "ubuntu-latest",
-          #                   "target": "x86_64-unknown-linux-gnu",
-          #                   "cli_bin": "wb-switch-linux-x64",
-          #                   "platform_tag": "linux-x64",
-          #                   "bundles": "deb,appimage",
-          #                   "update_os": "linux",
-          #                   "update_arch": "x86_64",
-          #                   "update_bundle": "appimage",
-          #                   "update_archive_name": "wb-switch-plus-linux-x86_64.AppImage",
-          #               },
+              {
+                  "name": "mac-arm64",
+                  "os": "macos-14",
+                  "target": "aarch64-apple-darwin",
+                  "bundles": "app",
+                  "update_os": "macos",
+                  "update_arch": "aarch64",
+                  "update_bundle": "macos",
+                  "update_archive_name": "wb-switch-plus-macos-aarch64.app.tar.gz",
+              },
+              {
+                  "name": "mac-x64",
+                  "os": "macos-14",
+                  "target": "x86_64-apple-darwin",
+                  "bundles": "app",
+                  "update_os": "macos",
+                  "update_arch": "x86_64",
+                  "update_bundle": "macos",
+                  "update_archive_name": "wb-switch-plus-macos-x86_64.app.tar.gz",
+              },
+              {
+                  "name": "linux-x64",
+                  "os": "ubuntu-latest",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "bundles": "deb,appimage",
+                  "update_os": "linux",
+                  "update_arch": "x86_64",
+                  "update_bundle": "appimage",
+                  "update_archive_name": "wb-switch-plus-linux-x86_64.AppImage",
+              },
           ]
           event = os.environ.get("EVENT_NAME", "")
           platform = (os.environ.get("PLATFORM") or "all").strip()
@@ -127,16 +122,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
           # 该 action 默认给 RUSTFLAGS 加 -D warnings，会把 vendor/agent-companion
-          # 快照在 linux cfg 下的 dead_code 告警升级成错误。发版构建不需要这层门禁
-          # （自有代码的告警由 test.yml 的 lint job 把关）。
+          # 快照在部分 cfg 下的 dead_code 告警升级成错误。发版构建不需要这层门禁。
           rustflags: ""
 
-      # cargo 缓存：依赖 + 编译产物，增量编译大幅提速（Cargo.lock 不变时命中）
+      # cargo 缓存：依赖 + 编译产物，增量编译大幅提速（Cargo.lock 不变时命中）。
+      # mac-x64 在 arm runner 上交叉编译 x86_64，用独立 key 前缀避免污染原生缓存。
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -144,45 +140,44 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ matrix.target }}-
 
-          #       - name: Install Linux system dependencies
-          #         if: runner.os == 'Linux'
-          #         run: |
-          #           sudo apt-get update
-          #           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-          #       # dmgbuild writes Finder metadata without opening Finder, so DMGs keep
-          #       # their large icons and drag arrow in headless macOS runners.
-          #       - name: Set up Python for dmgbuild
-          #         if: runner.os == 'macOS'
-          #         uses: actions/setup-python@v5
-          #         with:
-          #           python-version: '3.12'
-
-          #       - name: Install dmgbuild (macOS only)
-          #         if: runner.os == 'macOS'
-          #         shell: bash
-          #         run: |
-          #           DMGBUILD_VENV="$RUNNER_TEMP/dmgbuild-venv"
-          #           python3 -m venv "$DMGBUILD_VENV"
-          #           "$DMGBUILD_VENV/bin/python" -m pip install --disable-pip-version-check --no-input \
-          #             "dmgbuild==1.6.7"
-          #           echo "$DMGBUILD_VENV/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Python for reverse-proxy
-        if: runner.os == 'Windows'
+      # dmgbuild writes Finder metadata without opening Finder, so DMGs keep
+      # their large icons and drag arrow in headless macOS runners.
+      - name: Set up Python for dmgbuild
+        if: runner.os == 'macOS'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      # 反代服务（Windows 单文件 exe）。tauri.windows.conf.json 把它声明成 bundle 资源，
-      # 而 `resources` 里声明过的路径**必须存在**，缺文件 tauri build 会直接报错退出；
-      # 所以它必须在「Build desktop app」之前产出。macOS/Linux 不声明该资源（也因此
-      # 不需要任何 Python 侧构建），这是四平台能同时跑绿的前提。
-      - name: Build reverse-proxy service
-        if: runner.os == 'Windows' && vars.PUBLISH_APP != 'false'
+      - name: Install dmgbuild (macOS only)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          DMGBUILD_VENV="$RUNNER_TEMP/dmgbuild-venv"
+          python3 -m venv "$DMGBUILD_VENV"
+          "$DMGBUILD_VENV/bin/python" -m pip install --disable-pip-version-check --no-input \
+            "dmgbuild==1.6.7"
+          echo "$DMGBUILD_VENV/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # 只有 win-x64 打包 Python 版反代（退回选项）。它被 tauri.windows.conf.json
+      # 声明成 bundle 资源，而 `resources` 里声明过的路径必须存在，缺文件 tauri
+      # build 会直接报错退出——所以必须在「Build desktop app」之前产出。
+      - name: Build Python reverse-proxy (fallback, Windows only)
+        if: matrix.name == 'win-x64'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build Python reverse-proxy exe
+        if: matrix.name == 'win-x64'
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check --no-input \
@@ -191,40 +186,35 @@ jobs:
           test -f reverse-proxy/dist/wb-reverse-proxy.exe
           ls -la reverse-proxy/dist/
 
-      # 前端构建产物（CLI 二进制 rust-embed 嵌入 + Tauri App 使用）
-      #
-      # 二改修复：这里原本是 `npm run build`，但 tauri.conf.json 的
-      # beforeBuildCommand 是 `npm run build:desktop`，两者不等价 ——
-      # `build` 只做 demo 版的 `prepare-companion-demo.mjs clean` + tsc + vite；
-      # `build:desktop` 才会先编译 Agent Companion 的 Rust 运行时并拷进 dist。
-      # 缺了 companion 资源时打包不会报错，只会让悬浮窗运行时一片空白、
-      # 且永久点击穿透（空白页不上报命中区域），属于静默故障。
+      # 前端构建产物（Tauri App 使用；beforeBuildCommand 同口径，含 Companion
+      # 资源与 agent-studio-runtime 编译——AGENT_COMPANION_TARGET 决定 runtime
+      # 编到哪个架构，交叉编译 mac-x64 也由它落到正确目标）。
       - name: Build frontend
+        shell: bash
+        env:
+          AGENT_COMPANION_TARGET: ${{ matrix.target }}
         run: |
           npm install
           npm run build:desktop
 
-      # 桌面 App（mac app / nsis exe / deb + AppImage）
-      # 仓库变量 PUBLISH_APP=false 时整段跳过：只发前端改动时可不开桌面 App，
-      # 恢复为 true 后重跑本工作流即可幂等补发。
+      # 桌面 App（nsis exe / mac app + DMG / deb + AppImage）
       - name: Build desktop app
-        if: vars.PUBLISH_APP != 'false'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          AGENT_COMPANION_TARGET: ${{ matrix.target }}
         run: |
           VER="${GITHUB_REF_NAME#v}"
           if ! [[ "$VER" =~ ^[0-9] ]]; then
             VER=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           fi
           BUNDLE_ROOT="target/${{ matrix.target }}/release/bundle"
-          # cargo cache 会保留旧 NSIS/DMG/AppImage；不清理就会把 0.1.17 一类产物带进 Release。
+          # cargo cache 会保留旧 NSIS/DMG/AppImage；不清理就会把旧版本产物带进 Release。
           rm -rf "$BUNDLE_ROOT"
           npm run tauri -- build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           echo "bundle after build:"
           find "$BUNDLE_ROOT" -type f | sort || true
+          mkdir -p dist-bin
           if [ "${{ matrix.bundles }}" = "nsis" ]; then
             STALE=$(find "$BUNDLE_ROOT" -type f -name '*-setup.exe' ! -name "WB-Switch-Plus_${VER}_x64-setup.exe" || true)
             if [ -n "$STALE" ]; then
@@ -239,14 +229,12 @@ jobs:
             -o -name '*.AppImage' \) \
             -exec cp {} dist-bin/ \;
           # mac：纯命令行打 dmg（CI 无 Finder，Tauri 自带的 bundle_dmg.sh 会失败）
-          # 二改：矩阵已无 macOS 项，本分支恒不命中；保留以备恢复。
           if [ "${{ matrix.bundles }}" = "app" ]; then
             sh scripts/make-dmg.sh "$VER" "${{ matrix.update_arch }}" "target/${{ matrix.target }}/release/bundle/macos/WB-Switch-Plus.app"
             cp "wb-switch-plus_${VER}_${{ matrix.update_arch }}.dmg" dist-bin/
           fi
 
       - name: Generate updater manifest
-        if: matrix.update_arch != '' && vars.PUBLISH_APP != 'false'
         shell: bash
         env:
           UPDATE_OS: ${{ matrix.update_os }}
@@ -260,10 +248,8 @@ jobs:
           fi
           echo "updater bundle dir: $BUNDLE_DIR (version $VER)"
           ls -la "$BUNDLE_DIR" || true
-          # 二改：矩阵已无 Linux 项，本分支恒不命中；保留以备恢复。
           if [ "$UPDATE_OS" = "linux" ]; then
             # linux 有 deb / AppImage 两种安装形态：各自收集归档与签名，再生成两份 manifest。
-            # 本分支自行完成全部产物收集，不走下方 macOS/Windows 的公共尾部。
             LINUX_ROOT="$(dirname "$BUNDLE_DIR")"
             APPIMAGE="$(find "$LINUX_ROOT/appimage" -maxdepth 1 -type f -name '*.AppImage' | sort)"
             DEB="$(find "$LINUX_ROOT/deb" -maxdepth 1 -type f -name '*.deb' | sort)"
@@ -296,7 +282,6 @@ jobs:
             cp "$LINUX_ROOT/deb/latest-linux-deb-${UPDATE_ARCH}.json" dist-bin/
             exit 0
           fi
-          # 二改：当前只有 Windows 走这里；mac 分支在上面已说明。
           if [ "$UPDATE_OS" = "windows" ]; then
             ARCHIVE="$BUNDLE_DIR/WB-Switch-Plus_${VER}_x64-setup.exe"
           else
@@ -322,8 +307,21 @@ jobs:
           test -f "$MANIFEST"
           cp "$MANIFEST" dist-bin/
 
+      # 发布前自检：产物里不允许残留构建机绝对路径（见脚本头注释）。
+      # 只有 Windows 存在裸 exe 默认路径，其余平台显式传入产物逐个扫。
+      - name: Verify binaries (no build-machine path leaks)
+        shell: bash
+        run: |
+          PATTERN="target/${{ matrix.target }}/release"
+          ARGS=$(find "$PATTERN" -maxdepth 1 -type f \( -name 'wb-switch-rust*' -o -name 'wb-reverse-proxy*' \) 2>/dev/null || true)
+          if [ -n "$ARGS" ]; then
+            # shellcheck disable=SC2086
+            node scripts/verify-release-binary.mjs $ARGS
+          else
+            echo "no bare binaries found, skip"
+          fi
+
       - uses: actions/upload-artifact@v4
-        if: vars.PUBLISH_APP != 'false'
         with:
           name: ${{ matrix.name }}
           path: dist-bin/
@@ -332,7 +330,7 @@ jobs:
   release:
     name: Publish release assets
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_APP != 'false'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -345,7 +343,10 @@ jobs:
       - name: Merge updater manifests
         env:
           # 缺平台是静默故障（Linux 曾因此 18 个版本收不到更新），合并后强制校验键齐全
-          REQUIRED_PLATFORMS: windows-x86_64-nsis,windows-x86_64
+          REQUIRED_PLATFORMS: >-
+            windows-x86_64-nsis,windows-x86_64,
+            darwin-aarch64,darwin-x86_64,
+            linux-x86_64,linux-x86_64-deb,linux-x86_64-appimage
         run: python3 scripts/merge-update-manifests.py artifacts
 
       - name: Upload to GitHub Release
