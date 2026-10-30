@@ -356,12 +356,15 @@ fn build_admin_request(
     use axum::http::Method;
 
     // path 清洗（纵深防御；路由匹配是第二道闸）。
+    // 允许查询串：`rp.*` 的大量端点用 `?limit=` / `?days=` 传参
+    // （request-logs / usage/stats / security/logs 等），`?` `&` `=` 是合法成分；
+    // 越权防护靠「只允许相对路径 + 路由匹配」，不靠拦查询串。
     let trimmed = path.trim().trim_start_matches('/');
     if trimmed.is_empty()
         || trimmed.contains("..")
         || trimmed.contains("//")
         || !trimmed.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
-        || !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == '=' || c == '&')
+        || !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | '=' | '&' | '?'))
     {
         return Err(format!("非法的管理面路径：{path}"));
     }
@@ -584,6 +587,15 @@ mod tests {
         service.stop().await;
         let error = service.admin_request("GET".into(), "overview".into(), None).await.unwrap_err();
         assert!(error.contains("未运行"));
+    }
+
+    /// 带查询串的 path 是合法成分（request-logs?limit=… 等）。
+    #[test]
+    fn build_request_allows_query_string() {
+        let get = build_admin_request("GET".into(), "request-logs?limit=5000".into(), None).unwrap();
+        assert_eq!(get.uri(), "/request-logs?limit=5000");
+        let get2 = build_admin_request("GET".into(), "usage/stats?days=30&hours=24".into(), None).unwrap();
+        assert_eq!(get2.uri(), "/usage/stats?days=30&hours=24");
     }
 
     /// build_admin_request 的形状单测（不依赖运行态）。

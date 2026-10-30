@@ -56,9 +56,11 @@ async function request<T>(
   let reply: { status: number; body: unknown };
   try {
     reply = await call(options.method ?? "GET", path, options.body);
-  } catch {
-    // 通道级故障（服务停机 / invoke 失败）：与旧「连接不上」同一文案。
-    throw new RpError("无法连接反代服务，请确认它已启动", 0);
+  } catch (cause) {
+    // 通道级故障（服务停机 / invoke 失败）：优先透出 Rust 给的具体原因
+    //（「内置服务未运行」等），只有拿不到时才用通用文案。
+    const message = cause instanceof Error && cause.message ? cause.message : "无法连接反代服务，请确认它已启动";
+    throw new RpError(message, 0);
   }
   if (reply.status >= 400) {
     throw new RpError(extractDetail(reply.body) || `请求失败（HTTP ${reply.status}）`, reply.status);
