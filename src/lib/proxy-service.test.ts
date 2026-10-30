@@ -22,6 +22,8 @@ function status(over: Partial<ProxyServiceStatus> = {}): ProxyServiceStatus {
     portShifted: false,
     baseUrl: "http://127.0.0.1:8787",
     portNotice: null,
+    host: "127.0.0.1",
+    lanExposed: false,
     ...over,
   };
 }

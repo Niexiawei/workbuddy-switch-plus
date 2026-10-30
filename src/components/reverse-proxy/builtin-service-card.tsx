@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { FolderOpen, Loader2, Pause, Play, RefreshCw, Save, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
@@ -22,6 +23,7 @@ import { revealErrorLog } from "@/lib/api";
 import {
   parsePort,
   portLine,
+  proxyServiceSetBind,
   proxyServiceSetPort,
   proxyServiceStart,
   proxyServiceStatus,
@@ -30,6 +32,7 @@ import {
 } from "@/lib/proxy-service";
 
 export function BuiltinServiceCard() {
+  const navigate = useNavigate();
   const [status, setStatus] = useState<ProxyServiceStatus | null>(null);
   const [portDraft, setPortDraft] = useState("");
   const [busy, setBusy] = useState<"" | "start" | "stop" | "port" | "refresh">("");
@@ -117,6 +120,32 @@ export function BuiltinServiceCard() {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
       toast.error("改端口失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveBind(host: "127.0.0.1" | "0.0.0.0") {
+    // 开关切换 = set_bind(host, desiredPort)：一次重绑，端口沿用当前期望值。
+    const port = parsePort(portDraft) ?? status?.desiredPort;
+    if (!port) {
+      setError("端口必须在 1–65535 之间");
+      return;
+    }
+    setBusy("port");
+    setError("");
+    try {
+      const next = await proxyServiceSetBind(host, port);
+      apply(next);
+      if (host === "0.0.0.0") {
+        toast.warning("已对局域网开放。请确认 API 密钥配置了 IP 白名单，否则全网段可用。");
+      } else {
+        toast.success("已改回只绑本机");
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message);
+      toast.error("改监听范围失败");
     } finally {
       setBusy("");
     }
@@ -223,6 +252,44 @@ export function BuiltinServiceCard() {
             </div>
           </Field>
         </div>
+
+        {/* 监听范围：本机 / 局域网。写进配置（settings.reverse_proxy.host），
+            与 Python 形态「每次启动重新确认」不同——内置服务随主程序启动，
+            没有重启问答窗口，必须持久化（附录 D）。 */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-medium">对局域网开放</p>
+            <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+              {status?.lanExposed
+                ? "当前绑定 0.0.0.0，局域网内设备可用「本机内网 IP + 端口」访问数据面。"
+                : "默认只绑本机（127.0.0.1）。开放后局域网内设备也能调用智能体 API。"}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant={status?.lanExposed ? "outline" : "default"}
+            disabled={Boolean(busy)}
+            onClick={() => void saveBind(status?.lanExposed ? "127.0.0.1" : "0.0.0.0")}
+          >
+            {busy === "port" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {status?.lanExposed ? "只绑本机" : "对局域网开放"}
+          </Button>
+        </div>
+
+        {status?.lanExposed ? (
+          <Banner tone="warn">
+            <span className="flex items-start gap-1.5">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                局域网开放时，API 密钥的 IP 白名单是唯一的访问闸门。
+                <Button variant="link" size="sm" className="h-auto px-1 text-[11px]" onClick={() => navigate("/reverse-proxy/keys")}>
+                  去「API 密钥」配置白名单
+                </Button>
+                白名单为空的密钥对全网段可用。
+              </span>
+            </span>
+          </Banner>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-muted-foreground">
           <span>

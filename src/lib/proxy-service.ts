@@ -26,6 +26,10 @@ export type ProxyServiceStatus = {
   baseUrl?: string;
   /** 端口偏移时的现成提示文案；未偏移时为 null。 */
   portNotice?: string | null;
+  /** 监听地址。`127.0.0.1`（本机）或 `0.0.0.0`（对局域网开放）。 */
+  host: string;
+  /** `host` 不是回环 = 服务对局域网开放（此时 API 密钥白名单是唯一闸门）。 */
+  lanExposed: boolean;
   /** `phase === "failed"` 时的原因。 */
   error?: string;
   // hostToken 已随管理面 HTTP 退役（附录 C）：管理面走进程内通道，与令牌无关。
@@ -46,6 +50,16 @@ export async function proxyServiceStop(): Promise<ProxyServiceStatus> {
 /** 改端口：写入设置并立即重绑。端口非法时以 `Error` 抛出。 */
 export async function proxyServiceSetPort(port: number): Promise<ProxyServiceStatus> {
   return invoke<ProxyServiceStatus>("proxy_service_set_port", { port });
+}
+
+/**
+ * 改监听地址与端口（一次重绑）。
+ *
+ * host 只接受 `127.0.0.1` / `0.0.0.0`（附录 D：暴露面没有中间态）。
+ * 局域网开放后，API 密钥的 IP 白名单是唯一闸门——UI 要联动提示。
+ */
+export async function proxyServiceSetBind(host: "127.0.0.1" | "0.0.0.0", port: number): Promise<ProxyServiceStatus> {
+  return invoke<ProxyServiceStatus>("proxy_service_set_bind", { host, port });
 }
 // proxyAdminToken 已删除：管理面不在 HTTP 上，令牌概念随宿主注入形态一起退役
 // （附录 C）。管理面调用经 `reverse-proxy.ts` 的 setAdminChannel / proxy_admin_request。

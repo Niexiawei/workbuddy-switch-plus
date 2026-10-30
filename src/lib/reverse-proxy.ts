@@ -447,16 +447,15 @@ export type RpEgressPayload = {
 };
 
 // ── 服务设置（/admin/api/settings）──────────────────────────────────────
+// site_name 已删除（附录 D）：它是 Python 网页版管理后台的 <title> 字段，
+// 桌面端形态没有任何消费方。服务设置面板重组为「内置服务」卡片（P4）。
 
 export type RpServiceSettings = {
-  site_name: string;
   /** 设置加密密钥的来源（环境变量 / 本机文件），便于排查。 */
   settings_key_source?: string;
 };
 
-export type RpSettingsPatch = {
-  site_name?: string;
-};
+export type RpSettingsPatch = Record<string, never>;
 
 // ── 告警通知（/admin/api/alerts）────────────────────────────────────────
 //

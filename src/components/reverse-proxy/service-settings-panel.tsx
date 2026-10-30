@@ -4,8 +4,7 @@ import { toast } from "sonner";
 
 import { Banner, PanelHeader } from "@/components/reverse-proxy/rp-shared";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { rp, type RpServiceSettings, type RpSettingsPatch } from "@/lib/reverse-proxy";
+import { rp, type RpServiceSettings } from "@/lib/reverse-proxy";
 
 /**
  * 服务设置。
@@ -36,18 +35,13 @@ export function ServiceSettingsPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
-  /** 本地先改，再整份暂存 —— 保存时才拼成补丁发出去。 */
-  function patch(next: Partial<RpServiceSettings>) {
-    setSettings((current) => (current ? { ...current, ...next } : current));
-  }
-
   async function save() {
     if (!settings) return;
     setSaving(true);
     setError("");
     try {
-      const body: RpSettingsPatch = { site_name: settings.site_name };
-      setSettings(await rp.saveSettings(body));
+      // 没有可编辑字段（site_name 已退役）；保留保存按钮位是为了 old 页操作习惯不变。
+      setSettings(await rp.saveSettings({}));
       toast.success("服务设置已保存");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -91,23 +85,6 @@ export function ServiceSettingsPanel() {
           <span className="text-xs font-medium">基础</span>
         </div>
         <div className="flex flex-col gap-4 px-4 py-4">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-foreground/90" htmlFor="set-site-name">
-              服务名称
-            </label>
-            <Input
-              id="set-site-name"
-              className="max-w-md"
-              value={settings.site_name}
-              placeholder="例如 WorkBuddy"
-              maxLength={60}
-              onChange={(e) => patch({ site_name: e.target.value })}
-            />
-            <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
-              显示在管理页面标题处。
-            </p>
-          </div>
-
           {settings.settings_key_source ? (
             <p className="text-[11px] leading-4 text-muted-foreground">
               配置密钥来源：<code className="font-mono">{settings.settings_key_source}</code>

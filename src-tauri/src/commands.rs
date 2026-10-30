@@ -113,6 +113,18 @@ pub async fn proxy_service_set_port(
     state.set_port(port).await
 }
 
+/// 改监听地址与端口：写入设置并立即重绑（一次停启）。
+///
+/// host 只接受 `127.0.0.1` / `0.0.0.0`（计划附录 D：暴露面没有中间态）。
+#[tauri::command]
+pub async fn proxy_service_set_bind(
+    state: tauri::State<'_, crate::proxy_service::ProxyService>,
+    host: String,
+    port: u16,
+) -> Result<Value, String> {
+    state.set_bind(host, port).await
+}
+
 /// 进程内管理面调用：`{method, path, body}` → `{status, body}`。
 ///
 /// 管理面不在 HTTP 上（数据面是唯一 HTTP 面，见

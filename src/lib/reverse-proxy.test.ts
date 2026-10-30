@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 describe("活跃上报 API 客户端", () => {
-  it("accountAction(active) 打到单账号动作路径，方法 POST 且带 X-Proxy-Host-Token", async () => {
+  it("accountAction(active) 打到单账号动作路径，方法 POST", async () => {
     const fetchMock = stubFetch({ id: "a1", ok: false, sent: 0, count: 1, conversationId: "wb2api-1", message: "凭据无效" });
 
 
@@ -278,13 +278,13 @@ describe("服务设置 API 客户端", () => {
   it("saveSettings 是 PUT，且只发传进来的键（浅合并，不能整份回传）", async () => {
     const fetchMock = stubFetch({ site_name: "WB" });
 
-    await rp.saveSettings({ site_name: "工作台" });
+    await rp.saveSettings({});
 
     const [path, method, body] = call(fetchMock);
     expect(path).toBe("settings");
     expect(method).toBe("PUT");
     // 浅合并：只发改动过的键。整份回传会让两端互相覆盖。
-    expect(body).toEqual({ site_name: "工作台" });
+    expect(body).toEqual({});
   });
 });
 

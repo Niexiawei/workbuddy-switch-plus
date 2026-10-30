@@ -51,6 +51,9 @@ struct Inner {
     phase: Phase,
     /// 最后一次尝试的期望端口（配置里的值）。
     desired_port: u16,
+    /// 监听地址。`127.0.0.1`（默认）或 `0.0.0.0`（对局域网开放）。
+    /// 供 status() 在未运行时也如实回报；运行时以 handle 实际 bind 为准。
+    host: String,
     /// 管理面子 router（P0 瘦身后的形态，已 state 化，可直接 oneshot）。
     /// 与 handle 同锁同生命周期：start 装配、stop 清空。
     admin_router: Option<Arc<AxumRouter>>,
@@ -73,6 +76,7 @@ impl ProxyService {
                 handle: None,
                 phase: Phase::Stopped,
                 desired_port: DEFAULT_PORT,
+                host: "127.0.0.1".to_string(),
                 admin_router: None,
             }),
         }
@@ -91,10 +95,12 @@ impl ProxyService {
             "phase": inner.phase.as_str(),
             "desiredPort": desired,
             "portShifted": shifted,
+            "host": inner.host,
+            "lanExposed": inner.host != "127.0.0.1" && inner.host != "localhost" && inner.host != "::1",
         });
         if let Some(port) = port {
             status["port"] = json!(port);
-            status["baseUrl"] = json!(format!("http://127.0.0.1:{port}"));
+            status["baseUrl"] = json!(format!("http://{}:{port}", inner.host));
             // 中文提示放在后端生成：界面不用再拼一遍，避免两处文案漂移。
             status["portNotice"] = if shifted {
                 json!(format!("{desired} 已被占用，已在 {port} 运行"))
@@ -115,12 +121,19 @@ impl ProxyService {
         }
 
         // 端口：环境变量 > state.json 里的用户设置 > 8787。
+        // 监听地址：环境变量 > state.json 里的用户设置 > 127.0.0.1（P4，附录 D）。
         let mut cfg = ProxyConfig::for_user();
         let store = StateStore::open_writable(cfg.state_path())
             .map_err(|error| format!("无法读取 state.json：{error}"))?;
         if wb_switch_proxy::config::port_override().is_none() {
             let saved = saved_port(&store);
             cfg.port = saved.unwrap_or(cfg.port);
+        }
+        if std::env::var("WB_SERVE_HOST").map(|v| v.trim().is_empty()).unwrap_or(true) {
+            let saved_host = saved_host(&store);
+            if let Some(host) = saved_host {
+                cfg.host = host;
+            }
         }
         cfg.data_dir = cfg
             .state_path()
@@ -131,10 +144,12 @@ impl ProxyService {
             .map_err(|error| format!("无法创建反代数据目录：{error}"))?;
 
         let desired = cfg.port;
+        let host = cfg.host.clone();
         {
             let mut inner = self.inner.lock().unwrap();
             inner.phase = Phase::Starting;
             inner.desired_port = desired;
+            inner.host = host;
         }
 
         // 应用状态只有一份：数据面监听与管理面通道共用。
@@ -165,6 +180,46 @@ impl ProxyService {
                 Err(reason)
             }
         }
+    }
+
+    /// 改监听地址与端口并立即重绑（一次停机 + 启动，与 set_port 同形但二合一）。
+    ///
+    /// host 只接受 `127.0.0.1`（只绑本机）与 `0.0.0.0`（对局域网开放）两个值——
+    /// 不提供任意地址输入：暴露面要么收在本机、要么明确开到全网段，没有中间态。
+    /// bind 失败（非端口占用类）直接 Failed，**不做 0.0.0.0 → 127.0.0.1 的静默降级**。
+    pub async fn set_bind(&self, host: String, port: u16) -> Result<Value, String> {
+        if port == 0 {
+            return Err("端口必须在 1–65535 之间".to_string());
+        }
+        let host = match host.trim() {
+            "127.0.0.1" | "localhost" | "::1" => "127.0.0.1".to_string(),
+            "0.0.0.0" => "0.0.0.0".to_string(),
+            other => return Err(format!("不支持的监听地址：{other}（只支持 127.0.0.1 / 0.0.0.0）")),
+        };
+        let mut cfg = ProxyConfig::for_user();
+        let store = StateStore::open_writable(cfg.state_path())
+            .map_err(|error| format!("无法读取 state.json：{error}"))?;
+        store
+            .update(|value| {
+                let settings = value["settings"].as_object_mut().expect("settings 必须是对象");
+                let proxy = settings
+                    .entry("reverse_proxy".to_string())
+                    .or_insert_with(|| json!({}));
+                proxy["port"] = json!(port);
+                proxy["host"] = json!(host);
+            })
+            .map_err(|error| format!("写入监听设置失败：{error}"))?;
+        cfg.port = port;
+        cfg.host = host.clone();
+
+        // 先把旧监听关掉，否则它会占着自己原来的端口，导致新端口选择失败。
+        self.stop().await;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.desired_port = port;
+            inner.host = host;
+        }
+        self.start().await
     }
 
     /// 进程内管理面调用：`{method, path, body}` → `{status, body}`。
@@ -338,6 +393,17 @@ fn saved_port(store: &StateStore) -> Option<u16> {
         .filter(|port| *port > 0)
 }
 
+/// `state.json` 里保存的监听地址：`settings.reverse_proxy.host`。
+/// 只接受两个白名单值，其余（含任意地址）一律忽略——暴露面没有中间态。
+fn saved_host(store: &StateStore) -> Option<String> {
+    store
+        .get("settings")
+        .and_then(|settings| settings.get("reverse_proxy").cloned())
+        .and_then(|proxy| proxy.get("host").cloned())
+        .and_then(|host| host.as_str().map(str::to_string))
+        .filter(|host| host == "127.0.0.1" || host == "0.0.0.0")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +433,39 @@ mod tests {
         assert_eq!(port_of(json!({"settings": {"reverse_proxy": {"port": 0}}})), None);
         assert_eq!(port_of(json!({"settings": {"reverse_proxy": {"port": 70000}}})), None);
         assert_eq!(port_of(json!({"settings": {"reverse_proxy": {"port": "8787"}}})), None);
+    }
+
+    #[test]
+    fn reads_saved_host_from_settings() {
+        let store = |body: Value| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            std::fs::write(&path, body.to_string()).unwrap();
+            let store = StateStore::open_writable(&path).unwrap();
+            std::mem::forget(dir); // 测试进程短命，泄漏 TempDir 保 store 可读
+            store
+        };
+        // 白名单内：原样采纳。
+        for host in ["127.0.0.1", "0.0.0.0"] {
+            assert_eq!(
+                saved_host(&store(json!({"settings": {"reverse_proxy": {"host": host}}}))),
+                Some(host.to_string())
+            );
+        }
+        // 白名单外（任意地址 / 空值 / 非字符串 / 缺失）：忽略，回落 127.0.0.1。
+        for bad in ["192.168.1.5", "", "example.com"] {
+            assert_eq!(
+                saved_host(&store(json!({"settings": {"reverse_proxy": {"host": bad}}}))),
+                None,
+                "host={bad:?} 应被忽略"
+            );
+        }
+        assert_eq!(
+            saved_host(&store(json!({"settings": {"reverse_proxy": {"host": 1}}}))),
+            None,
+            "非字符串应被忽略"
+        );
+        assert_eq!(saved_host(&store(json!({}))), None);
     }
 
     #[test]
