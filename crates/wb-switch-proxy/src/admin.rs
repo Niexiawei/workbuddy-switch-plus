@@ -369,7 +369,30 @@ async fn models(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    Json(json!(catalog::load(&state).await)).into_response()
+    // Python /admin/api/models 返回 { models, total, free_count, default_model }；
+    // 数据面 /v1/models 才是裸数组（OpenAI 协议）。曾返回裸数组导致模型页 .length 崩。
+    let entries = catalog::load(&state).await;
+    let total = entries.len();
+    // free 判据与 Python is_free_model 一致：只有 tags；宁可漏判也不误判。
+    let is_free = |entry: &Value| -> bool {
+        entry
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|tags| {
+                tags.iter().filter_map(Value::as_str).any(|tag| {
+                    tag.contains("免费") || tag.to_lowercase().contains("free")
+                })
+            })
+            .unwrap_or(false)
+    };
+    let free_count = entries.iter().filter(|e| is_free(e)).count();
+    Json(json!({
+        "models": entries,
+        "total": total,
+        "free_count": free_count,
+        "default_model": entries.first().and_then(|e| e.get("id")).cloned().unwrap_or_else(|| json!("")),
+    }))
+    .into_response()
 }
 
 async fn settings(
@@ -846,7 +869,29 @@ async fn list_groups(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    Json(json!(groups_list(&state.store))).into_response()
+    // Python 返回 { groups, accounts, routings }；前端勾选框直接用 accounts，
+    // routings 是分组策略清单。曾只返回数组，groups-panel 解构 undefined 崩。
+    let accounts: Vec<Value> = crate::pool::Pool::new(
+        state.store.clone(),
+        state.cfg.accounts_path.clone(),
+    )
+    .rows(&crate::accounts::list_at(&state.cfg.accounts_path))
+    .iter()
+    .map(|row| {
+        json!({
+            "id": row["id"],
+            "name": row.get("name").cloned().unwrap_or_else(|| row["id"].clone()),
+            "pool_state": row.get("pool_state").cloned().unwrap_or_else(|| json!("")),
+            "realm": row.get("realm").cloned().unwrap_or_else(|| json!("")),
+        })
+    })
+    .collect();
+    Json(json!({
+        "groups": groups_list(&state.store),
+        "accounts": accounts,
+        "routings": ["round_robin", "least_used", "manual"],
+    }))
+    .into_response()
 }
 
 async fn create_group(
@@ -937,7 +982,44 @@ async fn egress_view(
             row
         }).collect())
         .unwrap_or_default();
-    Json(json!({"lines": lines, "bindings": egress.get("bindings").cloned().unwrap_or_else(|| json!({}))})).into_response()
+    // Python 返回 { lines, accounts, orphans, stale }；曾缺 accounts，
+    // egress-panel 对 undefined 读 .length 崩。
+    let bindings = egress.get("bindings").cloned().unwrap_or_else(|| json!({}));
+    let accounts: Vec<Value> = crate::pool::Pool::new(
+        state.store.clone(),
+        state.cfg.accounts_path.clone(),
+    )
+    .rows(&crate::accounts::list_at(&state.cfg.accounts_path))
+    .iter()
+    .map(|row| {
+        let id = row["id"].as_str().unwrap_or("");
+        json!({
+            "id": row["id"],
+            "name": row.get("name").cloned().unwrap_or_else(|| row["id"].clone()),
+            "pool_state": row.get("pool_state").cloned().unwrap_or_else(|| json!("")),
+            "line_id": bindings.get(id).cloned().unwrap_or_else(|| json!("")),
+        })
+    })
+    .collect();
+    // orphans：绑定指向了不存在的线路；stale：绑定指向的账号已不在池里。
+    let orphans: Vec<String> = bindings
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter(|(_aid, line_id)| {
+                    !lines.iter().any(|line| line.get("id").and_then(Value::as_str) == line_id.as_str())
+                })
+                .map(|(aid, _)| aid.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({
+        "lines": lines,
+        "accounts": accounts,
+        "orphans": orphans,
+        "stale": [],
+    }))
+    .into_response()
 }
 
 async fn create_egress_line(
@@ -1449,12 +1531,35 @@ async fn list_aliases(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    let value = state.store.get("model_aliases").unwrap_or_else(|| json!({}));
-    let rows: Vec<Value> = value
+    // Python 返回 { aliases, known_models, default_model, unknown_targets }；
+    // 曾返回别名行数组，models-usage-panel 解构 undefined 崩。
+    let aliases = state.store.get("model_aliases").unwrap_or_else(|| json!({}));
+    let known: Vec<String> = catalog::load(&state)
+        .await
+        .iter()
+        .filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let unknown: Vec<String> = aliases
         .as_object()
-        .map(|aliases| aliases.iter().map(|(alias, model)| json!({"alias": alias, "model": model})).collect())
+        .map(|map| {
+            let mut values: Vec<String> = map
+                .values()
+                .filter_map(Value::as_str)
+                .filter(|target| known.iter().all(|k| k != target))
+                .map(str::to_string)
+                .collect();
+            values.sort();
+            values.dedup();
+            values
+        })
         .unwrap_or_default();
-    Json(json!(rows)).into_response()
+    Json(json!({
+        "aliases": aliases,
+        "known_models": known,
+        "default_model": known.first().cloned().unwrap_or_default(),
+        "unknown_targets": unknown,
+    }))
+    .into_response()
 }
 
 async fn save_alias(
