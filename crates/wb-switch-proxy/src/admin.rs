@@ -271,6 +271,9 @@ fn public_key(entry: &Value, reveal: bool) -> Value {
         "models": entry.get("models").cloned().unwrap_or_else(|| json!([])),
         "quota": entry.get("quota").cloned().unwrap_or_else(|| json!(0)),
         "used_tokens": entry.get("used_tokens").cloned().unwrap_or_else(|| json!(0)),
+        // IP 白名单要与写入路径对称：列表看不到，用户就无从判断"配了为什么没用"。
+        "ip_allowlist": entry.get("ip_allowlist").cloned().unwrap_or_else(|| json!([])),
+        "max_ips": entry.get("max_ips").cloned().unwrap_or_else(|| json!(0)),
         "purpose": entry.get("purpose").cloned().unwrap_or_else(|| json!("")),
         "secret": if reveal { entry.get("secret").cloned().unwrap_or_else(|| json!("")) } else { json!("") },
     })
@@ -442,8 +445,8 @@ async fn create_key(
         "prefix": token.chars().take(12).collect::<String>(),
         "enabled": body.get("enabled").and_then(Value::as_bool).unwrap_or(true),
         "expires_at": body.get("expires_at").cloned().unwrap_or(Value::Null),
-        "max_ips": 0,
-        "ip_allowlist": [],
+        "max_ips": body.get("max_ips").and_then(Value::as_i64).unwrap_or(0),
+        "ip_allowlist": body.get("ip_allowlist").cloned().unwrap_or_else(|| json!([])),
         "models": body.get("models").cloned().unwrap_or_else(|| json!([])),
         "realm": body.get("realm").and_then(Value::as_str).unwrap_or(""),
         "groups": [],
@@ -506,6 +509,13 @@ async fn update_key(
         }
         if let Some(quota) = body.get("quota") {
             item["quota"] = quota.clone();
+        }
+        // IP 白名单：与数据面 keys::ip_allowed 同一套字段（I4 起真正生效）。
+        if let Some(allowlist) = body.get("ip_allowlist") {
+            item["ip_allowlist"] = allowlist.clone();
+        }
+        if let Some(max_ips) = body.get("max_ips") {
+            item["max_ips"] = max_ips.clone();
         }
     });
     if let Err(error) = result {
