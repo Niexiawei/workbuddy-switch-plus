@@ -72,15 +72,24 @@ for (const target of targets) {
         .toString("latin1")
         .replaceAll(/[^\x20-\x7e]+/g, " ");
       // panic 定位串豁免：rustc 会把 `file!()`（panic 的 Location）编译成
-      // 绝对路径，Linux/Mac 的 CI 构建里所有 panic 消息都带
-      // `/home/runner/work/<repo>/<repo>/...`。它只用于错误报告显示，
-      // 不参与运行时的资源寻址，不属于本脚本要防的
-      // 「env!("CARGO_MANIFEST_DIR") 被拿去 PathBuf::from」威胁模型。
-      // 判据：panic Location 在二进制里的排布是 `…/file.rs` 后紧跟消息文本，
-      // 命中的 needle 若以 .rs 结尾、或其前文紧邻 .rs 文件名，即视为定位串。
-      const before = bytes.subarray(Math.max(0, at - 200), at).toString("latin1");
-      const isPanicLocation =
-        needle.endsWith(".rs") || /\.rs[^\x20-\x7e]/.test(before.slice(-80));
+      // 绝对路径，CI 构建里所有 panic 消息都带构建机路径前缀
+      // （Windows: D:\a\<repo>\…；Linux/Mac: /home/runner/work/…），且 panic
+      // 表把几百个源文件路径连续存放。它只用于错误报告显示，不参与运行时
+      // 的资源寻址，不属于本脚本要防的「env!("CARGO_MANIFEST_DIR") 被拿去
+      // PathBuf::from」威胁模型。
+      //
+      // 判据：从命中点向后取出到下一个非路径字符为止的完整 token，
+      // panic Location 必然以源文件路径（.rs）收尾；真实的 CARGO_MANIFEST_DIR
+      // 泄漏拼的是 binaries/xxx.exe、icons、dist 等资源后缀，不会以 .rs 结尾。
+      let end = at;
+      while (
+        end < bytes.length &&
+        /[\x21-\x7e]/.test(String.fromCharCode(bytes[end]))
+      ) {
+        end += 1;
+      }
+      const token = bytes.subarray(at, end).toString("latin1");
+      const isPanicLocation = token.endsWith(".rs");
       if (!isPanicLocation) {
         hits.push({ needle, at, context });
       }
