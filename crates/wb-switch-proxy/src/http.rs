@@ -79,7 +79,7 @@ async fn health(
     State(state): State<Arc<AppState>>,
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
 ) -> Json<Value> {
-    let peer = crate::hostauth::peer_from_connect(connect);
+    let peer = crate::peer::peer_from_connect(connect);
     let accounts = accounts::list_at(&state.cfg.accounts_path);
     Json(json!({
         "status": "ok",
@@ -91,7 +91,7 @@ async fn health(
         "dataDir": state.cfg.data_dir.to_string_lossy(),
         "accountsPath": state.cfg.accounts_path.to_string_lossy(),
         "stateWritable": state.store.writable(),
-        // 未知来源（无 ConnectInfo）按非回环处理，与 hostauth 的保守口径一致。
+        // 未知来源（无 ConnectInfo）按非回环处理，与 peer 模块的保守口径一致。
         "peerIsLoopback": peer.map(|ip| ip.is_loopback()).unwrap_or(false),
         // 能力边界：客户端不应把 501 当成临时故障重试。管理面不在 HTTP 上（进程内通道）。
         "capabilities": {
@@ -116,7 +116,7 @@ async fn chat_handler(
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let peer = crate::hostauth::peer_from_connect(connect);
+    let peer = crate::peer::peer_from_connect(connect);
     let model = payload.get("model").and_then(Value::as_str);
     let key = match crate::keys::authenticate(&state.store, &headers, model, peer) {
         Ok(key) => key,
@@ -144,7 +144,7 @@ async fn messages_handler(
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let peer = crate::hostauth::peer_from_connect(connect);
+    let peer = crate::peer::peer_from_connect(connect);
     let key = match crate::keys::authenticate(
         &state.store,
         &headers,
@@ -197,7 +197,7 @@ async fn responses_handler(
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let peer = crate::hostauth::peer_from_connect(connect);
+    let peer = crate::peer::peer_from_connect(connect);
     let key = match crate::keys::authenticate(
         &state.store,
         &headers,
@@ -282,7 +282,7 @@ async fn models(
     headers: HeaderMap,
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
 ) -> Response {
-    let peer = crate::hostauth::peer_from_connect(connect);
+    let peer = crate::peer::peer_from_connect(connect);
     if let Err(response) = crate::keys::authenticate(&state.store, &headers, None, peer) {
         return response;
     }

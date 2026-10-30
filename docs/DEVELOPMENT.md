@@ -124,12 +124,12 @@ macOS / Linux 的安装包里**没有**反代服务：`reverse_proxy.rs` 已按�
 src-tauri/
   src/
     commands.rs      # Tauri command 薄包装
-    proxy_service.rs # 内置反代的生命周期（autostart / 停机 / 宿主令牌）
+    proxy_service.rs # 内置反代的生命周期（autostart / 停机 / 端口与监听范围 / 进程内管理面通道）
     modules/         # 已抽离到 crates/wb-switch-core
 crates/
   wb-switch-core/    # 核心逻辑：account/auth_file/oauth/process/switch/session/checkin/refresh/update/config
-  wb-switch-proxy/   # 内置反代：axum 数据面 + 管理面（由桌面端进程内启动）
-src/                 # 前端：components/pages/lib（api.ts 只走 Tauri invoke；反代管理面见 reverse-proxy.ts）
+  wb-switch-proxy/   # 内置反代：数据面是唯一 HTTP 面（/health + /v1/*）；管理面进程内调用
+src/                 # 前端：components/pages/lib（api.ts 只走 Tauri invoke；反代管理面走 reverse-proxy.ts 的进程内通道）
 reverse-proxy/       # Python 反代（反代服务old，回滚通道）；dist/wb-reverse-proxy.exe 随安装包分发
 scripts/             # 构建与发布辅助脚本（含 verify-release-binary.mjs 产物自检）
 ```

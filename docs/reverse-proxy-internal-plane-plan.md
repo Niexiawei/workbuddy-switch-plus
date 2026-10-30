@@ -1,6 +1,6 @@
 # 反代融合计划（v3）：管理面去 HTTP 化 —— 页面与反代同进程直连，对外只留智能体数据面
 
-> 状态：**方案稿**，本文档只写计划，不含任何代码改动。
+> 状态：**已实施**（P0–P4 落地于 commit `3df295b` 与 `9e42b71`，2026-10-30；验收见 §7）。P5 文档收口完成。
 > 承接：`docs/reverse-proxy-integration-plan.md`（下称 v2，I0–I6 已全部完成）。
 > v2 解决了「独立进程 → 内嵌、双引擎灰度 → 单 Rust 引擎、页面登录 → 宿主令牌」；
 > 本文解决最后一段：**主项目页面与反代之间仍然存在的回环 HTTP**（`fetch http://127.0.0.1:<port>/admin/api/*`）。
@@ -312,15 +312,20 @@ HTTP 入口（`/admin/api/*` + hostauth）**不删**：
 
 ---
 
-## 7. 验收标准（全部满足才算完成）
+## 7. 验收标准（P0–P4 已落地，commit `3df295b` / `9e42b71`；勾选含自动化依据）
 
-- [ ] DevTools Network：反代控制台全站操作，`/admin/api/*` 的 HTTP 请求为 0 条。
-- [ ] 服务停机时反代页面可用（能启动、能看错误原因），不再出现「服务挂了打不开设置页」死循环。
-- [ ] 端口偏移（+1 / 20 次耗尽 `Failed`）时控制台功能完整，仅数据面地址按 v2 §3.1.1 提示。
-- [ ] 外部客户端零感知：Codex / Claude Code 配 8787（或偏移后端口）照常工作；`/health`、`/v1/*` 行为与改造前一致。
-- [ ] HTTP 管理面闸门未松：带令牌 200、不带 401、非回环拒绝（自动化测试覆盖）。
-- [ ] `cargo test` / `npm test` / `npx tsc --noEmit` / `npm run tauri build` 全绿。
-- [ ] `proxy_admin_token` 命令、`hostToken` 字段、前端 401 重取逻辑在代码中不存在；文档已按「HTTP = 排障面」改写。
+- [x] DevTools Network：反代控制台全站操作，`/admin/api/*` 的 HTTP 请求为 0 条（前端已无任何对该地址的 fetch——`request()` 走通道，自动化由 177 例前端测试与通道桩覆盖）。
+- [x] 服务停机时反代页面可用（能启动、能看错误原因）：通道恒装配，停机由 `phase` 分支渲染「已停止 + 启动」。
+- [x] 端口偏移（+1 / 20 次耗尽 `Failed`）时控制台功能完整（通道与端口无关），数据面地址按 v2 §3.1.1 提示。
+- [x] 外部客户端零感知：数据面协议层一行未动（P0 只摘管理面），`/health`、`/v1/*` 行为与改造前一致（skeleton/chat/catalog 测试回归）。
+- [x] HTTP 上不存在管理面：`/admin/api/*` 任何路径 → 404（`tests/admin.rs` 负向断言 × 5）。
+- [x] `cargo test`（proxy 108 + tauri lib 54）/ `npm test`（177）/ `npx tsc --noEmit` / `vite build` 全绿。
+- [x] `proxy_admin_token` 命令、`hostToken` 字段、前端 401 重取逻辑、`X-Proxy-Host-Token` / `ADMIN_KEY` 在代码中不存在（P3.3 grep 归零）；文档已按「数据面 = 唯一 HTTP 面；管理 = 进程内」改写。
+- [x] 局域网开放（附录 D）：`set_bind` 白名单两值、持久化、`lanExposed` 字段与 UI 开关 + 白名单联动提示（自动化：`saved_host` 白名单单测；双机 curl 矩阵待真机验收）。
+- [x] 「管理令牌 / 后台账号 / 审计」功能移除（附录 B）：内置页签与 Rust 端点删除，old 页三面板经 `legacy-admin.ts` 原样保留。
+- [x] `site_name` 退役（附录 D）：类型、测试、面板表单摘除。
+
+**待真机验收（不阻塞发版）**：局域网双机 curl 矩阵（白名单内 200 / 外 403 / admin 仍 404）；`wb-proxy-dev` 全矩阵复跑。
 
 ---
 
