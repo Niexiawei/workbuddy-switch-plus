@@ -21,6 +21,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# CI 的 Windows runner 上 stdout 默认是 cp1252，中文打印会直接
+# UnicodeEncodeError（GitHub Actions 上实测过）。在第一个 print 之前
+# 强制切到 UTF-8；Python 3.7+ 支持，失败（被重定向等场景）就随它去。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+except (AttributeError, ValueError):
+    pass
+
 ROOT = Path(__file__).resolve().parent
 SPEC = ROOT / "wb-reverse-proxy.spec"
 NAME = "wb-reverse-proxy"
