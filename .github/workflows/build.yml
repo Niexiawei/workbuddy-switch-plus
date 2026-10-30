@@ -220,14 +220,26 @@ jobs:
             echo "error: secret TAURI_SIGNING_PRIVATE_KEY is empty" >&2
             exit 1
           fi
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 -d > "$KEY_FILE"
-          # 解码结果必须是标准 minisign 私钥（首行 untrusted comment），验一下再喂
-          head -1 "$KEY_FILE" | grep -q '^untrusted comment:' || {
-            echo "error: decoded key does not look like a minisign secret key (missing 'untrusted comment:' header)" >&2
+          # Secret 应为 base64 包裹的 minisign 私钥（本地 .key 文件原样内容）。
+          # 先解码校验格式（防贴错成明文或密钥体片段），但**喂给 tauri 的是
+          # 原样 base64**——tauri CLI 内部会自己做 base64 解码，明文反而报
+          # "Invalid symbol ... offset 9"（明文首行 "untrusted " 的空格）。
+          if printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 -d > "$KEY_FILE" 2>/dev/null; then
+            head -1 "$KEY_FILE" | grep -q '^untrusted comment:' || {
+              echo "error: secret decodes to something that is NOT a minisign secret key" >&2
+              echo "       (first line should be 'untrusted comment: ...')" >&2
+              echo "       please paste the RAW content of ~/.wb-switch-plus/wb-switch-updater.key" >&2
+              exit 1
+            }
+            echo "secret format check: OK (base64-wrapped minisign key)"
+          else
+            echo "error: secret is not valid base64 — it looks like the DECODED plaintext key." >&2
+            echo "       paste the RAW content of ~/.wb-switch-plus/wb-switch-updater.key instead" >&2
+            echo "       (the 348-char single-line base64 string), not the 'untrusted comment:' text" >&2
             exit 1
-          }
-          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
+          fi
           rm -f "$KEY_FILE"
+          export TAURI_SIGNING_PRIVATE_KEY="$TAURI_SIGNING_PRIVATE_KEY_B64"
           BUNDLE_ROOT="target/${{ matrix.target }}/release/bundle"
           # cargo cache 会保留旧 NSIS/DMG/AppImage；不清理就会把旧版本产物带进 Release。
           rm -rf "$BUNDLE_ROOT"
