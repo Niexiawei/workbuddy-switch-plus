@@ -544,13 +544,6 @@ fn account_record(state: &AppState, aid: &str) -> Option<Value> {
         })
 }
 
-fn plain_token(record: &Value, key: &str) -> Option<String> {
-    match record.get(key) {
-        Some(Value::String(token)) if !token.trim().is_empty() => Some(token.trim().to_string()),
-        _ => None,
-    }
-}
-
 async fn pool_settings(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
@@ -615,31 +608,22 @@ async fn account_action(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    let Some(record) = account_record(&state, &aid) else {
-        return (StatusCode::NOT_FOUND, Json(json!({"detail": "账号不存在"}))).into_response();
-    };
-    let Some(token) = plain_token(&record, "access_token") else {
+    // 未知动作在这里就 404，不再落到「尚未迁移」——那会把「拼错了」和
+    // 「还没做」糊成同一句话，排查时往完全错误的方向找。
+    let Some(action) = crate::tasks::Action::parse(&action) else {
         return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"detail": "该账号 token 是加密信封，Rust 引擎暂不支持（P4）"})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"detail": format!("未知动作：{action}")})),
         )
             .into_response();
     };
-    let result = match action.as_str() {
-        "status" => crate::billing::credits(&state.cfg, &token).await.map(|value| json!({"ok": true, "id": aid, "message": "积分状态已更新", "remaining": value["remaining"]})),
-        "checkin" => crate::billing::checkin(&state.cfg, &token).await.map(|value| json!({"ok": true, "id": aid, "message": value["status"], "result": value})),
-        "refresh" => match plain_token(&record, "refresh_token") {
-            Some(refresh) => crate::billing::refresh_token(&state.cfg, &refresh).await.map(|value| json!({"ok": true, "id": aid, "message": "登录凭据已刷新", "result": value})),
-            None => Err("账号没有 refresh_token".to_string()),
-        },
-        other => {
-            return (StatusCode::NOT_IMPLEMENTED, Json(json!({"detail": format!("动作 {other} 尚未迁移")}))).into_response();
-        }
-    };
-    match result {
-        Ok(payload) => Json(payload).into_response(),
-        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({"detail": error}))).into_response(),
-    }
+    let result = state
+        .tasks
+        .operate(&aid, action, crate::tasks::Source::Manual)
+        .await;
+    // 单个动作的失败（账号不存在 / 已暂停 / 正在执行）是**结果**不是传输错误：
+    // 一律 200，前端拿 `ok` 与 `message` 自己展示。只有状态写入失败才是 500。
+    Json(result).into_response()
 }
 
 async fn pool_action(
@@ -652,27 +636,22 @@ async fn pool_action(
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    if action != "status" {
+    let Some(action) = crate::tasks::Action::parse(&action) else {
         return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"detail": format!("批量动作 {action} 尚未迁移")})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"detail": format!("未知动作：{action}")})),
         )
             .into_response();
+    };
+    match state.tasks.batch(action).await {
+        Some(result) => Json(result).into_response(),
+        // 与 Python 同文案：批量是资源，同一时刻只允许一个。
+        None => (
+            StatusCode::CONFLICT,
+            Json(json!({"detail": "已有批量任务进行中，请稍后刷新"})),
+        )
+            .into_response(),
     }
-    let mut results = Vec::new();
-    for row in accounts::list_at(&state.cfg.accounts_path) {
-        let Some(record) = account_record(&state, &row.id) else {
-            continue;
-        };
-        let Some(token) = plain_token(&record, "access_token") else {
-            continue;
-        };
-        match crate::billing::credits(&state.cfg, &token).await {
-            Ok(value) => results.push(json!({"id": row.id, "ok": true, "message": "积分状态已更新", "remaining": value["remaining"]})),
-            Err(error) => results.push(json!({"id": row.id, "ok": false, "message": error})),
-        }
-    }
-    Json(json!({"results": results})).into_response()
 }
 
 // ── 其余管理端点（P5 收口）────────────────────────────────────────────────
@@ -701,50 +680,129 @@ async fn checkin_logs(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     let peer = peer_of(connect);
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    Json(state.store.get("checkin_logs").unwrap_or_else(|| json!([]))).into_response()
+    // `limit` / `kind` 是前端筛选项直接发过来的查询参数（`accounts-panel.tsx`
+    // 的 loadTaskLogs）。不接的话「全部类别 / 签到 / 派猫猫旅行 / 凭据保活 /
+    // 活跃上报」这个下拉点了没反应。
+    let params = query_params(query.as_deref());
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(200);
+    let kind = params
+        .get("kind")
+        .map(String::as_str)
+        .filter(|value| !value.is_empty() && *value != "all");
+    Json(json!(state.tasks.task_logs(limit, kind))).into_response()
+}
+
+/// 解析查询串成 `k=v` 映射（值做最简百分号解码：`%20` 与 `+`）。
+///
+/// 自己写而不是引 `serde_urlencoded`：这里只有两个短参数，且值域限定在
+/// 类别名（`checkin`/`travel`/`keepalive`/`active`），不需要完整解码器。
+fn query_params(query: Option<&str>) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for pair in query.unwrap_or("").split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = match pair.split_once('=') {
+            Some((key, value)) => (key, value),
+            None => (pair, ""),
+        };
+        map.insert(percent_decode(key), percent_decode(value));
+    }
+    map
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
 
 async fn checkin_logs_summary(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     let peer = peer_of(connect);
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    let logs = state.store.get("checkin_logs").unwrap_or_else(|| json!([]));
-    let mut total = 0;
-    let mut failed = 0;
-    if let Some(rows) = logs.as_array() {
-        total = rows.len();
-        failed = rows
-            .iter()
-            .filter(|row| row.get("ok").and_then(Value::as_bool) == Some(false))
-            .count();
-    }
-    Json(json!({"total": total, "failed": failed, "ok": total - failed})).into_response()
+    let hours = query_params(query.as_deref())
+        .get("hours")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24);
+    Json(state.tasks.task_summary(hours)).into_response()
 }
 
 async fn clear_checkin_logs(
     State(state): State<std::sync::Arc<AppState>>,
     headers: HeaderMap,
     connect: Option<ConnectInfo<std::net::SocketAddr>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     let peer = peer_of(connect);
     if let Err(response) = authorize(&state, &headers, peer) {
         return response;
     }
-    match state
-        .store
-        .update(|value| value["checkin_logs"] = json!([]))
-    {
-        Ok(()) => ok(),
+    // 给了 `kind` 只清那一类；没给就全清（Python `clear_task_logs` 同口径）。
+    let kind = query_params(query.as_deref())
+        .get("kind")
+        .cloned()
+        .filter(|value| !value.is_empty() && value != "all");
+    let mut removed = 0_i64;
+    let result = state.store.update(|value| {
+        let existing = value
+            .get("checkin_logs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let kept: Vec<Value> = match &kind {
+            Some(kind) => existing
+                .iter()
+                .filter(|row| {
+                    row.get("kind").and_then(Value::as_str).unwrap_or("checkin") != kind.as_str()
+                })
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        removed = (existing.len() - kept.len()) as i64;
+        value["checkin_logs"] = json!(kept);
+    });
+    match result {
+        Ok(()) => Json(json!({"ok": true, "removed": removed})).into_response(),
         Err(error) => write_failed(error),
     }
 }
