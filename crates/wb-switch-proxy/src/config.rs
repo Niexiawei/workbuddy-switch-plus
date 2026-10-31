@@ -78,6 +78,15 @@ impl ProxyConfig {
         self
     }
 
+    /// 覆盖 billing 域（积分 / 签到 / 刷新 / 活跃上报）。
+    ///
+    /// 任务层必须走这里而不是另建一份 `for_user()`：否则测试注入的 mock 地址、
+    /// 以及用户自建网关的配置，都会在动作路径上被悄悄丢掉。
+    pub fn with_billing_base(mut self, base: impl Into<String>) -> Self {
+        self.billing_base = base.into();
+        self
+    }
+
     pub fn chat_url(&self) -> String {
         format!(
             "{}/v2/chat/completions",

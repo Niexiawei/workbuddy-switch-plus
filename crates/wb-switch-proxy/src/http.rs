@@ -36,6 +36,11 @@ pub struct AppState {
     pub started_at: Instant,
     /// 模型目录缓存（60s）。放这里而不是模块级静态：测试之间不会串。
     pub catalog: std::sync::Mutex<Option<(Instant, Vec<Value>)>>,
+    /// 账号池动作执行器（签到 / 旅行 / 活跃 / 批量）。
+    ///
+    /// 放在 `AppState` 里而不是每次现建：它的批量互斥锁与单账号串行锁
+    /// 必须跨请求存活，否则「已有批量任务进行中」这条判断永远为假。
+    pub tasks: Arc<crate::tasks::TaskRunner>,
 }
 
 impl AppState {
@@ -45,6 +50,11 @@ impl AppState {
             store.clone(),
             cfg.accounts_path.clone(),
         ));
+        let tasks = Arc::new(crate::tasks::TaskRunner::with_billing_base(
+            store.clone(),
+            cfg.accounts_path.clone(),
+            cfg.billing_base.clone(),
+        ));
         Self {
             cfg,
             store,
@@ -52,6 +62,7 @@ impl AppState {
             metrics: Arc::new(crate::metrics::Metrics::new()),
             started_at: Instant::now(),
             catalog: std::sync::Mutex::new(None),
+            tasks,
         }
     }
 

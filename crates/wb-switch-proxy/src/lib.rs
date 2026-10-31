@@ -28,8 +28,10 @@ pub mod ports;
 pub mod profile;
 pub mod projection;
 pub mod prompt;
+pub mod report;
 pub mod responses;
 pub mod state;
+pub mod tasks;
 pub mod usage;
 pub mod wire;
 
