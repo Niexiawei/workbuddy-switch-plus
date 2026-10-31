@@ -275,9 +275,13 @@ fn launch_command(app: &tauri::AppHandle) -> Result<Launch, String> {
         if let Some(bundle) = bundle() {
             return Ok(Launch { program: "/usr/bin/open".into(), args: vec!["-gj".into(), bundle.to_string_lossy().into_owned()], env_path: None });
         }
-        // A dev executable needs its Vite server. Start the existing dev script,
-        // retaining the Node toolchain PATH instead of registering a broken binary.
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().map_err(|e| e.to_string())?;
+        // 开发态（无 bundle）：不再用 env!("CARGO_MANIFEST_DIR") 拼 dev 自启路径。
+        // 它是编译期常量，release 构建会把构建机绝对路径原样烧进二进制
+        // （CI 实测命中：launch plist 里写进 /Users/runner/...，到了用户机器上
+        // 指向不存在的目录）。release 态与 Windows/Linux 同一态度：不注册。
+        if !cfg!(debug_assertions) { return Err("开发版不注册开机自启，请使用打包后的应用".into()); }
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "找不到桌面启动项目".to_string())?;
+        let root = std::path::Path::new(&manifest_dir).join("../..").canonicalize().map_err(|e| e.to_string())?;
         let path = std::env::var("PATH").unwrap_or_default();
         let npm = std::env::split_paths(&path).map(|p| p.join("npm")).find(|p| p.is_file()).ok_or("找不到 npm，无法配置开发版自启")?;
         if !root.join("package.json").is_file() { return Err("找不到桌面启动项目".into()); }
