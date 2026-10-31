@@ -19,6 +19,7 @@ use crate::modules::config::{
     WORKBUDDY_API_ENDPOINT,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
+use crate::modules::task_store::{DesktopStore, TaskStore};
 
 static TRAVEL_RUNNING: AtomicBool = AtomicBool::new(false);
 static TRAVEL_CLAIM_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -381,13 +382,27 @@ fn classify_depart_error(_code: i64, message: &str) -> DepartClass {
 }
 
 /// 对单个账号执行派猫猫旅行：依次尝试地点列表，报错分类处理。
+///
+/// 桌面端入口：数据源固定为全局账号库（内部走 [`DesktopStore`]）。反代请用
+/// [`depart_travel_with_store`]，两者跑的是同一段协议。
 pub async fn depart_travel_for_account(account: &Value) -> Value {
+    depart_travel_with_store(&DesktopStore, account).await
+}
+
+/// 同上，但由调用方决定「账号从哪来、缓存写到哪」。
+///
+/// 协议本身完全在函数体内——这是桌面端与反代对同一个账号给出同一结论的前提。
+pub async fn depart_travel_with_store<S: TaskStore + ?Sized>(
+    store: &S,
+    account: &Value,
+) -> Value {
     // 国际版无成长中心：不发请求、不写缓存（design D7）。
-    if !variant_of(account).supports_travel() {
+    if !store.supports_travel(account) {
         return unsupported_variant_skip();
     }
     let cfg = load_checkin_config();
     let acc = ensure_fresh_token(account.clone(), &cfg).await;
+    store.store_refreshed(&account_key(account), &acc);
     let uid = acc.get("uid").and_then(Value::as_str).map(String::from);
     let uid_ref = uid.as_deref();
 
@@ -687,9 +702,22 @@ fn mark_claimed(result: &mut Value, reward_credit: Option<Value>, message: Optio
 
 /// 领取单账号旅行奖励。未知/缺 state 保持未领取；idle 不默认当成已领。
 async fn claim_travel_for_account(account: &Value, prior: &Value) -> Value {
+    claim_travel_with_store(&DesktopStore, account, prior).await
+}
+
+/// 对账 + 领奖，由调用方决定数据源。
+///
+/// `prior` 是上一次落盘的结果（可能为空对象）：`arrived` 时用它补齐地点/积分，
+/// `idle` 时用它判断「这一趟是不是已经领过」。
+pub async fn claim_travel_with_store<S: TaskStore + ?Sized>(
+    store: &S,
+    account: &Value,
+    prior: &Value,
+) -> Value {
     let mut result = prior.clone();
     let cfg = load_checkin_config();
     let acc = ensure_fresh_token(account.clone(), &cfg).await;
+    store.store_refreshed(&account_key(account), &acc);
 
     let status = fetch_travel_status(&acc).await;
     if status.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -767,8 +795,21 @@ async fn apply_claim_response(account: &Value, result: &mut Value, record_id: i6
 }
 
 async fn sync_account_for_dispatch(account: &Value, prior: Option<&Value>) -> Value {
+    sync_for_dispatch_with_store(&DesktopStore, account, prior).await
+}
+
+/// 按官方状态跑一轮「该做什么就做什么」：等待 / 领奖 / 当日结束 / 派发。
+///
+/// 反代的「领奖」按钮走这里——它比单纯的 `claim` 更合适：账号其实还没派过的时候，
+/// 它会把这一次变成派发，而不是对着一个 idle 账号空领一次。
+pub async fn sync_for_dispatch_with_store<S: TaskStore + ?Sized>(
+    store: &S,
+    account: &Value,
+    prior: Option<&Value>,
+) -> Value {
     let cfg = load_checkin_config();
     let acc = ensure_fresh_token(account.clone(), &cfg).await;
+    store.store_refreshed(&account_key(account), &acc);
     let uid = acc.get("uid").and_then(Value::as_str).map(String::from);
     let uid_ref = uid.as_deref();
 
@@ -811,7 +852,9 @@ async fn sync_account_for_dispatch(account: &Value, prior: Option<&Value>) -> Va
             let stub = prior.cloned().unwrap_or_else(|| {
                 depart_result(&acc, uid_ref, true, true, None, Some("arrived"), "已到达")
             });
-            claim_travel_for_account(account, &stub).await
+            // 必须把 store 继续往下传：这里换成 DesktopStore 会让反代的领奖
+            // 把结果写进桌面端的 travel_cache.json，而反代面板读的是自己的 state。
+            claim_travel_with_store(store, account, &stub).await
         }
         TravelAction::SkipDailyLimit => {
             let mut result = prior.cloned().unwrap_or_else(|| {
@@ -828,7 +871,7 @@ async fn sync_account_for_dispatch(account: &Value, prior: Option<&Value>) -> Va
             apply_daily_limit_reached(&mut result, &status);
             result
         }
-        TravelAction::Depart => depart_travel_for_account(account).await,
+        TravelAction::Depart => depart_travel_with_store(store, account).await,
         TravelAction::StatusError => depart_result(
             &acc,
             uid_ref,
