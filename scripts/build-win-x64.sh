@@ -239,7 +239,7 @@ fi
 
 say "4/5 构建桌面端（NSIS 安装包）"
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-wb-switch-dev}"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-wb-switch-ci}"
 info "beforeBuildCommand 会自动跑 npm run build:desktop（前端 + Companion + agent-studio-runtime）"
 # 反代 exe 的 mtime 要比源码新，否则装进包里的是旧版本——这里顺带提醒
 if [ -f reverse-proxy/dist/wb-reverse-proxy.exe ]; then

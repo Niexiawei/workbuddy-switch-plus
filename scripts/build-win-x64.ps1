@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Windows x64 一键构建（PowerShell 版）：反代服务 exe + 前端 + 桌面端 NSIS 安装包
@@ -378,7 +378,9 @@ if (Test-Path dist) {
 Say '4/5 构建桌面端（NSIS 安装包）'
 $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $Key -Raw).Trim()
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'wb-switch-dev'
+    # 与 CI 侧 GitHub Secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD 保持一致；
+    # 轮换密钥时两处要一起改（2026-10-31 轮换后为 wb-switch-ci）。
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'wb-switch-ci'
 }
 Info 'beforeBuildCommand 会自动跑 npm run build:desktop（前端 + Companion + agent-studio-runtime）'
 # 反代 exe 的 mtime 要比源码新，否则装进包里的是旧版本——这里顺带提醒
