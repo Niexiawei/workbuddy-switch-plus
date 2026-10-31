@@ -341,11 +341,15 @@ jobs:
 
       # 发布前自检：产物里不允许残留构建机绝对路径（见脚本头注释）。
       # 只有 Windows 存在裸 exe 默认路径，其余平台显式传入产物逐个扫。
+      # 注意必须排除 .d（cargo depfile，纯文本、天生记录构建机绝对路径，
+      # 不随包分发、不在扫描范围）。也排除 .pdb/.dSYM 等符号文件。
       - name: Verify binaries (no build-machine path leaks)
         shell: bash
         run: |
           PATTERN="target/${{ matrix.target }}/release"
-          ARGS=$(find "$PATTERN" -maxdepth 1 -type f \( -name 'wb-switch-rust*' -o -name 'wb-reverse-proxy*' \) 2>/dev/null || true)
+          ARGS=$(find "$PATTERN" -maxdepth 1 -type f \
+            \( -name 'wb-switch-rust' -o -name 'wb-switch-rust.exe' \
+            -o -name 'wb-reverse-proxy' -o -name 'wb-reverse-proxy.exe' \) 2>/dev/null || true)
           if [ -n "$ARGS" ]; then
             # shellcheck disable=SC2086
             node scripts/verify-release-binary.mjs $ARGS
